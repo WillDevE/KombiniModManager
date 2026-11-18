@@ -88,6 +88,43 @@ impl AppView {
         cx.notify();
     }
 
+    pub fn confirm_keep_version(&mut self, id: ModId, index: usize, cx: &mut Context<Self>) {
+        let Some(m) = self.lib.mods.get(&id) else {
+            return;
+        };
+        let Some(v) = m.history.get(index) else {
+            return;
+        };
+        let label = v
+            .file_name
+            .clone()
+            .or_else(|| version_label(v.version.as_deref()))
+            .unwrap_or_else(|| "this earlier file".to_owned());
+        self.modal = Some(Modal::confirm(
+            format!("Keep {label} as its own mod?"),
+            format!(
+                "{label} becomes a separate mod next to {}, enabled wherever it is. Use this when it was a different file that got replaced, not an older version of the same one. Needs no download.",
+                m.title
+            ),
+            "Keep as mod",
+            false,
+            move |this, cx| {
+                let id = id.clone();
+                this.run(
+                    format!("restore-version:{id}"),
+                    "Adding mod",
+                    cx,
+                    move |e, _| e.keep_version_as_mod(&id, index),
+                    |this, report, cx| {
+                        this.success(report.summary);
+                        this.scan_issues_quietly(cx);
+                    },
+                );
+            },
+        ));
+        cx.notify();
+    }
+
     /// The "Versions" section, or `None` when there is nothing to show.
     pub fn render_versions_section(
         &mut self,
@@ -184,6 +221,7 @@ impl AppView {
             .enumerate()
             .map(|(i, v)| {
                 let restore_id = id.clone();
+                let keep_id = id.clone();
                 let label = version_label(v.version.as_deref())
                     .or_else(|| v.file_name.clone())
                     .unwrap_or_else(|| "Earlier version".to_owned());
@@ -211,6 +249,18 @@ impl AppView {
                                 .collect::<Vec<_>>()
                                 .join(" · "),
                             )),
+                    )
+                    .child(
+                        Button::new(("keep-version", i))
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Plus)
+                            .label("Keep as mod")
+                            .tooltip("Add it as a separate mod instead of swapping")
+                            .disabled(busy)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.confirm_keep_version(keep_id.clone(), i, cx)
+                            })),
                     )
                     .child(
                         Button::new(("restore-version", i))
@@ -242,9 +292,12 @@ impl AppView {
                             .py(px(6.))
                             .flex()
                             .flex_col()
-                            .child(faint(
-                                "Kept from earlier updates; restoring needs no download.",
-                            ))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(c(FAINT))
+                                    .child("Earlier versions"),
+                            )
                             .children(history),
                     )
                 })

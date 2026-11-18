@@ -705,4 +705,29 @@ fn update_keeps_previous_version_and_rolls_back() {
         second
     );
     assert!(e.restore_version(&id, 5).is_err());
+    // Keeping the replaced version as its own mod places both files.
+    let report = e.keep_version_as_mod(&id, 0).unwrap();
+    assert!(report.summary.starts_with("Added "), "{}", report.summary);
+    e.with_state(|s| {
+        assert!(s.mods[&id].history.is_empty());
+        let (new_id, kept) = s
+            .mods
+            .iter()
+            .find(|(k, _)| **k != id)
+            .expect("a second mod");
+        assert_eq!(kept.version.as_deref(), Some("1.0"));
+        let profile = s.profile();
+        assert!(profile.enabled.contains(new_id));
+        let at = profile.order.iter().position(|o| o == &id).unwrap();
+        assert_eq!(profile.order.get(at + 1), Some(new_id));
+    });
+    assert_eq!(
+        std::fs::read(f.addons(1).join("pak01_dir.vpk")).unwrap(),
+        second
+    );
+    assert_eq!(
+        std::fs::read(f.addons(1).join("pak02_dir.vpk")).unwrap(),
+        first
+    );
+    assert!(e.keep_version_as_mod(&id, 0).is_err());
 }

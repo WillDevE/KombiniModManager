@@ -278,6 +278,50 @@ impl Mod {
         true
     }
 
+    /// Takes history entry `index` out as a mod of its own with id `id`,
+    /// sharing this mod's page metadata. For files that replaced each other
+    /// but are really separate mods (e.g. several files on one GameBanana
+    /// page). Returns `None` when `index` is out of range.
+    pub fn split_version(&mut self, index: usize, id: ModId, now: i64) -> Option<Mod> {
+        if index >= self.history.len() {
+            return None;
+        }
+        let v = self.history.remove(index);
+        let label = v
+            .file_name
+            .as_deref()
+            .map(|n| n.rsplit_once('.').map_or(n, |(stem, _)| stem))
+            .filter(|n| !n.trim().is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                v.version
+                    .as_deref()
+                    .map(|v| format!("v{}", v.trim_start_matches(['v', 'V'])))
+            })
+            .unwrap_or_else(|| "earlier file".to_owned());
+        let mut m = Mod::new(id, format!("{} ({label})", self.title), self.source, now);
+        m.remote_id = self.remote_id;
+        m.author = self.author.clone();
+        m.category = self.category.clone();
+        m.page_url = self.page_url.clone();
+        m.description = self.description.clone();
+        m.thumbnail_url = self.thumbnail_url.clone();
+        m.gallery = self.gallery.clone();
+        m.requirements = self.requirements.clone();
+        m.source_key = self.source_key.clone();
+        m.version = v.version;
+        m.file_id = v.file_id;
+        m.file_name = v.file_name;
+        m.md5 = v.md5;
+        m.variant_desc = v.variant_desc;
+        m.remote_updated_at = v.remote_updated_at;
+        m.archive_path = v.archive_path;
+        m.heroes = v.heroes;
+        m.safety = v.safety;
+        m.files = v.files;
+        Some(m)
+    }
+
     pub fn roots(&self) -> impl Iterator<Item = &ModFile> {
         self.files.iter().filter(|f| f.is_root())
     }

@@ -138,6 +138,60 @@ impl Engine {
         })
     }
 
+    /// Turns history entry `index` of mod `id` into a mod of its own, placed
+    /// right after it and enabled wherever `id` is enabled. Recovers files
+    /// that replaced each other but were separate mods.
+    pub fn keep_version_as_mod(&self, id: &ModId, index: usize) -> Result<ChangeReport> {
+        let id = id.clone();
+        let now = kombini_storage::now();
+        self.mutate("keep_version_as_mod", &NoProgress, move |state| {
+            let m = state
+                .mods
+                .get(&id)
+                .ok_or_else(|| AppError::mod_not_found(&id))?;
+            let v = m
+                .history
+                .get(index)
+                .ok_or_else(|| AppError::invalid("That version is no longer kept"))?;
+            let tail = v
+                .file_id
+                .map_or_else(|| format!("v{}", v.replaced_at), |f| f.to_string());
+            let new_id = match m.remote_id {
+                Some(remote) => {
+                    ModId::gamebanana_sibling(remote, &tail, |c| state.mods.contains_key(c))
+                }
+                None => {
+                    let base: String = format!("{id}_{tail}").chars().take(56).collect();
+                    let mut c = ModId::new(base.clone());
+                    let mut n = 2;
+                    while state.mods.contains_key(&c) {
+                        c = ModId::new(format!("{base}_{n}"));
+                        n += 1;
+                    }
+                    c
+                }
+            };
+            let split = state
+                .mods
+                .get_mut(&id)
+                .and_then(|m| m.split_version(index, new_id.clone(), now))
+                .ok_or_else(|| AppError::invalid("That version is no longer kept"))?;
+            let title = split.title.clone();
+            state.mods.insert(new_id.clone(), split);
+            for profile in &mut state.profiles {
+                profile.ensure_ordered(&new_id);
+                if let Some(at) = profile.order.iter().position(|o| o == &id) {
+                    profile.order.retain(|o| o != &new_id);
+                    profile.order.insert(at + 1, new_id.clone());
+                }
+                if profile.enabled.contains(&id) {
+                    profile.enabled.insert(new_id.clone());
+                }
+            }
+            Ok(format!("Added {title}"))
+        })
+    }
+
     /// Enables `enable` and disables `disable` in one transaction (skin
     /// swaps, shuffles). `summary` becomes the activity entry.
     pub fn set_enabled_many(

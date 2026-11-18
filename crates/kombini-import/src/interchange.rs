@@ -448,14 +448,7 @@ impl FileRef {
 /// Id for another file of GameBanana submission `remote`, unique in `taken`.
 fn sibling_id(remote: u64, file_id: Option<u64>, key: &str, taken: &BTreeSet<ModId>) -> ModId {
     let tail = file_id.map_or_else(|| slug(key), |f| f.to_string());
-    let base: String = format!("gb{remote}_{tail}").chars().take(56).collect();
-    let mut id = ModId::new(base.clone());
-    let mut n = 2;
-    while taken.contains(&id) {
-        id = ModId::new(format!("{base}_{n}"));
-        n += 1;
-    }
-    id
+    ModId::gamebanana_sibling(remote, &tail, |id| taken.contains(id))
 }
 
 pub(crate) fn slug(text: &str) -> String {

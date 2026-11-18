@@ -66,6 +66,19 @@ impl ModId {
         Self(format!("gb{submission}"))
     }
 
+    /// Id for another file of the same GameBanana submission:
+    /// `gb<submission>_<tail>`, with `_2`, `_3`... appended while `taken`.
+    pub fn gamebanana_sibling(submission: u64, tail: &str, taken: impl Fn(&ModId) -> bool) -> Self {
+        let base: String = format!("gb{submission}_{tail}").chars().take(56).collect();
+        let mut id = Self(base.clone());
+        let mut n = 2;
+        while taken(&id) {
+            id = Self(format!("{base}_{n}"));
+            n += 1;
+        }
+        id
+    }
+
     /// The GameBanana submission id encoded in a `gb<id>` mod id.
     pub fn gamebanana_submission(&self) -> Option<u64> {
         self.0.strip_prefix("gb").and_then(|rest| rest.parse().ok())
