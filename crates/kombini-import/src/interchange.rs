@@ -208,18 +208,26 @@ pub fn import_mods(
     progress: &dyn Progress,
 ) -> Result<BTreeMap<String, ModId>, AppError> {
     report.warnings.extend(doc.warnings.iter().cloned());
-    let (existing_keys, existing_remote) = engine.with_state(|s| {
+    let (existing_keys, mut remote_files, mut taken_ids) = engine.with_state(|s| {
         let keys: BTreeMap<String, ModId> = s
             .mods
             .values()
             .filter_map(|m| m.source_key.clone().map(|k| (k, m.id.clone())))
             .collect();
-        let remote: BTreeMap<u64, ModId> = s
-            .mods
-            .values()
-            .filter_map(|m| m.remote_id.map(|r| (r, m.id.clone())))
-            .collect();
-        (keys, remote)
+        // Installed files per GameBanana submission: one page can ship several
+        // files (skin, voice lines, icons), each its own library entry.
+        let mut remote: BTreeMap<u64, Vec<FileRef>> = BTreeMap::new();
+        for m in s.mods.values() {
+            if let Some(r) = m.remote_id {
+                remote.entry(r).or_default().push(FileRef {
+                    file_id: m.file_id,
+                    file_name: m.file_name.clone(),
+                    id: m.id.clone(),
+                });
+            }
+        }
+        let ids: BTreeSet<ModId> = s.mods.keys().cloned().collect();
+        (keys, remote, ids)
     });
     let mut key_to_id: BTreeMap<String, ModId> = BTreeMap::new();
     let total = doc.mods.len();
@@ -242,10 +250,15 @@ pub fn import_mods(
         } else {
             None
         };
-        if let Some(id) = existing_keys
-            .get(&m.key)
-            .or_else(|| remote.and_then(|r| existing_remote.get(&r)))
-        {
+        let same_file = remote.and_then(|r| {
+            remote_files.get(&r).and_then(|files| {
+                files
+                    .iter()
+                    .find(|f| f.same_as(m.origin.file_id, m.origin.file_name.as_deref()))
+                    .map(|f| f.id.clone())
+            })
+        });
+        if let Some(id) = existing_keys.get(&m.key).cloned().or(same_file) {
             key_to_id.insert(m.key.clone(), id.clone());
             report
                 .skipped
@@ -284,7 +297,12 @@ pub fn import_mods(
             }
             let requirements: Vec<Requirement> =
                 serde_json::from_value(m.requirements.clone()).unwrap_or_default();
+            // The page's first file is `gb<id>`; its other files get their own id.
+            let id = remote
+                .filter(|r| remote_files.contains_key(r))
+                .map(|r| sibling_id(r, m.origin.file_id, &m.key, &taken_ids));
             let meta = InstallMeta {
+                id,
                 title: Some(m.name.clone()).filter(|n| !n.is_empty()),
                 source: Some(if remote.is_some() {
                     ModSource::Gamebanana
@@ -310,6 +328,14 @@ pub fn import_mods(
         let _ = std::fs::remove_dir_all(&staging);
         match result {
             Ok(id) => {
+                if let Some(r) = remote {
+                    remote_files.entry(r).or_default().push(FileRef {
+                        file_id: m.origin.file_id,
+                        file_name: m.origin.file_name.clone(),
+                        id: id.clone(),
+                    });
+                }
+                taken_ids.insert(id.clone());
                 key_to_id.insert(m.key.clone(), id.clone());
                 report.imported.push(id);
             }
@@ -396,6 +422,40 @@ pub fn import_profiles(
         report.profiles.push(id);
     }
     Ok(())
+}
+
+/// An installed file of a GameBanana submission.
+struct FileRef {
+    file_id: Option<u64>,
+    file_name: Option<String>,
+    id: ModId,
+}
+
+impl FileRef {
+    /// Whether an incoming file is this one. Files that can't be told apart
+    /// (no file id or name on either side) count as the same.
+    fn same_as(&self, file_id: Option<u64>, file_name: Option<&str>) -> bool {
+        if let (Some(a), Some(b)) = (self.file_id, file_id) {
+            return a == b;
+        }
+        match (self.file_name.as_deref(), file_name) {
+            (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+            _ => true,
+        }
+    }
+}
+
+/// Id for another file of GameBanana submission `remote`, unique in `taken`.
+fn sibling_id(remote: u64, file_id: Option<u64>, key: &str, taken: &BTreeSet<ModId>) -> ModId {
+    let tail = file_id.map_or_else(|| slug(key), |f| f.to_string());
+    let base: String = format!("gb{remote}_{tail}").chars().take(56).collect();
+    let mut id = ModId::new(base.clone());
+    let mut n = 2;
+    while taken.contains(&id) {
+        id = ModId::new(format!("{base}_{n}"));
+        n += 1;
+    }
+    id
 }
 
 pub(crate) fn slug(text: &str) -> String {

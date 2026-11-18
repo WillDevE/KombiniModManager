@@ -399,3 +399,50 @@ fn migrates_a_grimoire_library_with_profiles() {
         assert!(ranked.enabled.contains(&skin) && ranked.enabled.contains(&old));
     });
 }
+
+#[test]
+fn grimoire_files_from_one_gamebanana_page_stay_separate_mods() {
+    use crate::managers;
+    let g = Game::new();
+    let citadel = g.root.join("game/citadel");
+    vpk(&g.addons().join("pak01_dir.vpk"), &[("a/skin.txt", "S")]);
+    vpk(&g.addons().join("pak02_dir.vpk"), &[("a/voice.txt", "V")]);
+    vpk(&g.addons().join("pak03_dir.vpk"), &[("a/icons.txt", "I")]);
+    let data = g.dir.path().join("Grimoire");
+    write(
+        &data.join("mod-metadata.json"),
+        r#"{
+            "pak01_dir.vpk": {"modName": "Rice", "gameBananaId": 700, "gameBananaFileId": 1, "sourceFileName": "skin.zip"},
+            "pak02_dir.vpk": {"modName": "Rice", "gameBananaId": 700, "gameBananaFileId": 2, "sourceFileName": "voicelines.zip"},
+            "pak03_dir.vpk": {"modName": "Rice", "gameBananaId": 700, "gameBananaFileId": 3, "sourceFileName": "icons.zip"}
+        }"#,
+    );
+    let found = managers::read_grimoire(&citadel, &data).unwrap();
+    let e = g.open("data");
+    let report = managers::migrate(&e, &found, &NoProgress).unwrap();
+    assert_eq!(report.imported, 3, "{:?}", report.warnings);
+
+    e.with_state(|s| {
+        assert_eq!(s.mods.len(), 3, "each file is its own mod");
+        let mut files: Vec<_> = s.mods.values().map(|m| m.file_id).collect();
+        files.sort();
+        assert_eq!(files, [Some(1), Some(2), Some(3)]);
+        assert!(s.mods.values().all(|m| m.remote_id == Some(700)));
+        assert!(
+            s.mods.values().all(|m| m.history.is_empty()),
+            "nothing was replaced"
+        );
+        assert!(s.mods.contains_key(&kombini_core::ModId::gamebanana(700)));
+        let active = s.profile();
+        assert_eq!(active.enabled.len(), 3, "all three stay enabled");
+    });
+
+    // Importing the same files again adds nothing.
+    let again = managers::read_grimoire(&citadel, &data).unwrap();
+    assert!(
+        again.doc.mods.is_empty() || {
+            let r = managers::migrate(&e, &again, &NoProgress).unwrap();
+            r.imported == 0
+        }
+    );
+}
