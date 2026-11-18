@@ -19,6 +19,14 @@ fn binding(node: &Node) -> Result<Option<&Member>> {
         .find(|member| member.key.eq_ignore_ascii_case(SETTINGS)))
 }
 
+/// Whether stock metadata can hold a sound binding at all. Props and other
+/// models without one often have empty metadata, which is not a finding.
+fn may_bind(stock: &str) -> bool {
+    stock
+        .to_ascii_lowercase()
+        .contains(&SETTINGS.to_ascii_lowercase())
+}
+
 fn metadata(value: &Value) -> Option<&str> {
     value.get("m_modelInfo")?.get("m_keyValueText")?.as_str()
 }
@@ -33,6 +41,9 @@ pub(super) fn repair(
     let (Some(authored), Some(stock)) = (metadata(&old.value), metadata(&current.value)) else {
         return Ok(None);
     };
+    if !may_bind(stock) {
+        return Ok(None);
+    }
     let stock_doc = document(stock)?;
     let Some(settings) = binding(&stock_doc)? else {
         return Ok(None);
@@ -95,6 +106,18 @@ pub(super) fn repair(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn models_without_a_stock_binding_are_skipped() {
+        assert!(!may_bind(""));
+        assert!(!may_bind(&format!(
+            "{HEADER}
+{{ }}"
+        )));
+        assert!(may_bind(&format!(
+            "{HEADER} {{ taggedsoundsettings_t = {{ }} }}"
+        )));
+    }
 
     #[test]
     fn parser_distinguishes_nested_quoted_and_commented_bindings() -> Result<()> {
