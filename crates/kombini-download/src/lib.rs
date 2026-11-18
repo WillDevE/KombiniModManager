@@ -4,6 +4,10 @@
 //! size and MD5, then move to `<dir>/<id>/<file_name>`. At most
 //! `max_concurrent` run at once. Every state change is reported through the
 //! `on_change` hook so the app can persist the queue and refresh the UI.
+//!
+//! Pause and cancel take effect at once, even while a worker is stuck in a
+//! network read: each run gets its own control token, and reports from a
+//! worker whose token was replaced or stopped are ignored.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use kombini_core::{AppError, ErrorCode};
@@ -19,7 +23,11 @@ use std::time::{Duration, Instant};
 /// Hard cap on a single download.
 pub const MAX_DOWNLOAD_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 const CHUNK: usize = 64 * 1024;
-const RETRIES: u32 = 3;
+/// Waits between automatic retries of a failed transfer, in seconds. The
+/// count starts over whenever an attempt made progress.
+const BACKOFF_SECS: [u64; 6] = [2, 4, 8, 15, 30, 30];
+/// Wait after the server rate limited us.
+const RATE_LIMIT_WAIT_SECS: u64 = 60;
 const EVENT_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +103,8 @@ struct Inner {
     dir: PathBuf,
     agent: ureq::Agent,
     slots: Mutex<Vec<Slot>>,
+    /// Worker threads still running, including ones left behind by pause
+    /// or cancel; only used to share the bandwidth cap.
     active: AtomicUsize,
     max_concurrent: AtomicUsize,
     /// Bytes per second across all downloads; 0 = unlimited.
@@ -137,6 +147,30 @@ fn net(message: impl Into<String>) -> AppError {
     AppError::new(ErrorCode::Network, message)
 }
 
+/// A failed transfer attempt and whether retrying can help.
+struct Attempt {
+    error: AppError,
+    retry: bool,
+}
+
+impl From<AppError> for Attempt {
+    fn from(error: AppError) -> Self {
+        let retry = matches!(error.code, ErrorCode::Network | ErrorCode::RateLimited);
+        Self { error, retry }
+    }
+}
+
+fn fatal(message: impl Into<String>) -> Attempt {
+    Attempt {
+        error: net(message),
+        retry: false,
+    }
+}
+
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
 impl DownloadManager {
     pub fn new(
         dir: &Path,
@@ -149,8 +183,10 @@ impl DownloadManager {
                 env!("CARGO_PKG_VERSION")
             ))
             .http_status_as_error(false)
+            .timeout_resolve(Some(Duration::from_secs(15)))
             .timeout_connect(Some(Duration::from_secs(15)))
-            .timeout_per_read(Some(Duration::from_secs(60)))
+            .timeout_recv_response(Some(Duration::from_secs(30)))
+            .timeout_per_read(Some(Duration::from_secs(30)))
             .max_redirects(8)
             .build()
             .into();
@@ -266,59 +302,137 @@ impl DownloadManager {
         item
     }
 
-    fn set_status(&self, id: &str, status: Status) -> Option<DownloadItem> {
+    /// Pauses a queued or running download; the partial file is kept.
+    pub fn pause(&self, id: &str) {
         let item = {
             let mut slots = self.inner.slots.lock();
-            let slot = slots.iter_mut().find(|s| s.item.spec.id == id)?;
-            slot.item.status = status;
+            let Some(slot) = slots.iter_mut().find(|s| s.item.spec.id == id) else {
+                return;
+            };
+            if !matches!(slot.item.status, Status::Queued | Status::Downloading) {
+                return;
+            }
+            slot.control.store(PAUSE, Ordering::SeqCst);
+            slot.item.status = Status::Paused;
             slot.item.bytes_per_sec = 0;
             slot.item.clone()
         };
         (self.inner.on_change)(&item);
-        Some(item)
+        self.pump();
     }
 
-    fn control(&self, id: &str) -> Option<Arc<AtomicU8>> {
-        self.inner
-            .slots
-            .lock()
-            .iter()
-            .find(|s| s.item.spec.id == id)
-            .map(|s| s.control.clone())
-    }
-
-    pub fn pause(&self, id: &str) {
-        if let Some(c) = self.control(id) {
-            c.store(PAUSE, Ordering::SeqCst);
-        }
-        if self.item(id).is_some_and(|i| i.status == Status::Queued) {
-            self.set_status(id, Status::Paused);
-        }
-    }
-
+    /// Resumes a paused download or retries a failed one. A failed item
+    /// whose file was already downloaded (a later step such as installing
+    /// failed) goes straight back to `Completed` without downloading again.
     pub fn resume(&self, id: &str) {
-        let Some(item) = self.item(id) else { return };
-        if matches!(item.status, Status::Paused | Status::Failed) {
-            if let Some(c) = self.control(id) {
-                c.store(RUN, Ordering::SeqCst);
+        let item = {
+            let mut slots = self.inner.slots.lock();
+            let Some(slot) = slots.iter_mut().find(|s| s.item.spec.id == id) else {
+                return;
+            };
+            match slot.item.status {
+                Status::Paused => slot.item.status = Status::Queued,
+                Status::Failed => {
+                    if slot.item.path.as_deref().is_some_and(Path::is_file) {
+                        slot.item.status = Status::Completed;
+                    } else {
+                        slot.item.status = Status::Queued;
+                        slot.item.path = None;
+                    }
+                }
+                _ => return,
             }
-            self.set_status(id, Status::Queued);
-            self.pump();
+            slot.item.error = None;
+            slot.item.bytes_per_sec = 0;
+            slot.item.clone()
+        };
+        (self.inner.on_change)(&item);
+        self.pump();
+    }
+
+    /// Cancels a download and deletes its partial data, at once even when
+    /// the transfer is stuck.
+    pub fn cancel(&self, id: &str) {
+        let item = {
+            let mut slots = self.inner.slots.lock();
+            let Some(slot) = slots.iter_mut().find(|s| s.item.spec.id == id) else {
+                return;
+            };
+            if slot.item.status.is_finished() {
+                return;
+            }
+            slot.control.store(CANCEL, Ordering::SeqCst);
+            slot.item.status = Status::Cancelled;
+            slot.item.bytes_per_sec = 0;
+            slot.item.clone()
+        };
+        self.discard_part(id);
+        (self.inner.on_change)(&item);
+        self.pump();
+    }
+
+    /// Marks a completed download failed because a later step (installing)
+    /// failed. The file is kept, so `resume` retries that step without
+    /// downloading again.
+    pub fn fail(&self, id: &str, error: AppError) {
+        let item = {
+            let mut slots = self.inner.slots.lock();
+            let Some(slot) = slots
+                .iter_mut()
+                .find(|s| s.item.spec.id == id && s.item.status == Status::Completed)
+            else {
+                return;
+            };
+            slot.item.status = Status::Failed;
+            slot.item.error = Some(error);
+            slot.item.clone()
+        };
+        (self.inner.on_change)(&item);
+    }
+
+    /// Deletes the partial file. It is renamed first: a worker stuck in a
+    /// read may still hold it open, and a new download of the same id must
+    /// be able to create the path again.
+    fn discard_part(&self, id: &str) {
+        let part = self.part_path(id);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let gone = part.with_extension(format!("part.{stamp}.old"));
+        match std::fs::rename(&part, &gone) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&gone);
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&part);
+            }
         }
     }
 
-    /// Cancels and deletes partial data.
-    pub fn cancel(&self, id: &str) {
-        if let Some(c) = self.control(id) {
-            c.store(CANCEL, Ordering::SeqCst);
-        }
-        if let Some(item) = self.item(id)
-            && !item.status.is_active()
-            && !item.status.is_finished()
-        {
-            let _ = std::fs::remove_file(self.part_path(id));
-            self.set_status(id, Status::Cancelled);
-        }
+    /// Runs `f` on the slot of `id` only while `control` is still that
+    /// slot's token and the item is running; reports from a worker that
+    /// was paused, cancelled or replaced are dropped.
+    fn with_current(
+        &self,
+        id: &str,
+        control: &Arc<AtomicU8>,
+        f: impl FnOnce(&mut DownloadItem),
+    ) -> bool {
+        let item = {
+            let mut slots = self.inner.slots.lock();
+            let Some(slot) = slots.iter_mut().find(|s| {
+                s.item.spec.id == id
+                    && Arc::ptr_eq(&s.control, control)
+                    && s.item.status.is_active()
+            }) else {
+                return false;
+            };
+            f(&mut slot.item);
+            slot.item.clone()
+        };
+        (self.inner.on_change)(&item);
+        true
     }
 
     /// Removes a finished item from the list (keeps the downloaded file).
@@ -368,14 +482,15 @@ impl DownloadManager {
         }
     }
 
-    /// Starts workers for queued items up to the concurrency limit.
+    /// Starts workers for queued items up to the concurrency limit. Only
+    /// items still marked running count, so a worker stuck after pause or
+    /// cancel does not hold up the queue.
     fn pump(&self) {
         loop {
-            let next = {
+            let (item, control) = {
                 let mut slots = self.inner.slots.lock();
-                if self.inner.active.load(Ordering::SeqCst)
-                    >= self.inner.max_concurrent.load(Ordering::SeqCst)
-                {
+                let running = slots.iter().filter(|s| s.item.status.is_active()).count();
+                if running >= self.inner.max_concurrent.load(Ordering::SeqCst) {
                     return;
                 }
                 let Some(slot) = slots.iter_mut().find(|s| s.item.status == Status::Queued) else {
@@ -384,100 +499,118 @@ impl DownloadManager {
                 };
                 slot.item.status = Status::Downloading;
                 slot.item.error = None;
-                self.inner.active.fetch_add(1, Ordering::SeqCst);
+                slot.control = Arc::new(AtomicU8::new(RUN));
                 (slot.item.clone(), slot.control.clone())
             };
-            (self.inner.on_change)(&next.0);
+            (self.inner.on_change)(&item);
+            self.inner.active.fetch_add(1, Ordering::SeqCst);
             let me = self.clone();
-            let failed_id = next.0.spec.id.clone();
+            let worker_control = control.clone();
+            let spec = item.spec.clone();
             let spawned = std::thread::Builder::new()
-                .name(format!("download-{}", next.0.spec.id))
+                .name(format!("download-{}", item.spec.id))
                 .spawn(move || {
-                    let id = next.0.spec.id.clone();
-                    let result = me.run(&next.0.spec, &next.1);
-                    me.finish(&id, result);
+                    let result = me.run(&spec, &worker_control);
+                    me.finish(&spec.id, &worker_control, result);
                     me.inner.active.fetch_sub(1, Ordering::SeqCst);
                     me.pump();
                     me.inner.idle.notify_all();
                 });
             if let Err(e) = spawned {
                 self.inner.active.fetch_sub(1, Ordering::SeqCst);
-                self.finish(&failed_id, Err(AppError::internal(format!("thread: {e}"))));
+                self.finish(
+                    &item.spec.id,
+                    &control,
+                    Err(AppError::internal(format!("thread: {e}"))),
+                );
             }
         }
     }
 
-    fn finish(&self, id: &str, result: Result<PathBuf, AppError>) {
-        let item = {
-            let mut slots = self.inner.slots.lock();
-            let Some(slot) = slots.iter_mut().find(|s| s.item.spec.id == id) else {
-                return;
-            };
-            slot.item.bytes_per_sec = 0;
+    fn finish(&self, id: &str, control: &Arc<AtomicU8>, result: Result<PathBuf, AppError>) {
+        let done = self.with_current(id, control, |item| {
+            item.bytes_per_sec = 0;
             match result {
                 Ok(path) => {
-                    slot.item.status = Status::Completed;
-                    slot.item.path = Some(path);
-                    slot.item.received = slot.item.total.unwrap_or(slot.item.received);
+                    item.status = Status::Completed;
+                    item.path = Some(path);
+                    item.received = item.total.unwrap_or(item.received);
                 }
                 Err(e) if e.code == ErrorCode::Cancelled => {
-                    slot.item.status = match slot.control.load(Ordering::SeqCst) {
+                    item.status = match control.load(Ordering::SeqCst) {
                         PAUSE => Status::Paused,
                         _ => Status::Cancelled,
                     };
                 }
                 Err(e) => {
-                    slot.item.status = Status::Failed;
-                    slot.item.error = Some(e);
+                    item.status = Status::Failed;
+                    item.error = Some(e);
                 }
             }
-            slot.item.clone()
-        };
-        if item.status == Status::Cancelled {
-            let _ = std::fs::remove_file(self.part_path(id));
+        });
+        if done && self.item(id).is_some_and(|i| i.status == Status::Cancelled) {
+            self.discard_part(id);
         }
-        (self.inner.on_change)(&item);
     }
 
-    fn update_progress(&self, id: &str, received: u64, total: Option<u64>, bps: u64) {
-        let item = {
-            let mut slots = self.inner.slots.lock();
-            let Some(slot) = slots.iter_mut().find(|s| s.item.spec.id == id) else {
-                return;
-            };
-            slot.item.received = received;
-            slot.item.total = total;
-            slot.item.bytes_per_sec = bps;
-            slot.item.clone()
-        };
-        (self.inner.on_change)(&item);
+    fn update_progress(
+        &self,
+        id: &str,
+        control: &Arc<AtomicU8>,
+        received: u64,
+        total: Option<u64>,
+        bps: u64,
+    ) {
+        self.with_current(id, control, |item| {
+            item.received = received;
+            item.total = total;
+            item.bytes_per_sec = bps;
+        });
     }
 
-    fn run(&self, spec: &DownloadSpec, control: &AtomicU8) -> Result<PathBuf, AppError> {
+    /// Sleeps `secs`, waking early (with `Cancelled`) on pause or cancel.
+    fn wait(control: &AtomicU8, secs: u64) -> Result<(), AppError> {
+        for _ in 0..secs * 10 {
+            if control.load(Ordering::SeqCst) != RUN {
+                return Err(AppError::cancelled());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    }
+
+    fn run(&self, spec: &DownloadSpec, control: &Arc<AtomicU8>) -> Result<PathBuf, AppError> {
         std::fs::create_dir_all(&self.inner.dir)
             .map_err(|e| AppError::from_io("Creating the downloads folder", &self.inner.dir, &e))?;
         let part = self.part_path(&spec.id);
-        let mut attempt = 0;
+        // A partial file that fails verification (stale or corrupt) is
+        // deleted and downloaded once more from the start.
+        let mut fresh_start = false;
         loop {
-            match self.transfer(spec, &part, control) {
+            self.fetch(spec, &part, control)?;
+            if !self.with_current(&spec.id, control, |item| {
+                item.status = Status::Verifying;
+                item.bytes_per_sec = 0;
+            }) {
+                return Err(AppError::cancelled());
+            }
+            match verify(&part, spec) {
                 Ok(()) => break,
-                Err(e) if e.code == ErrorCode::Network && attempt < RETRIES => {
-                    attempt += 1;
-                    tracing::warn!(id = %spec.id, attempt, error = %e, "download interrupted; resuming");
-                    for _ in 0..(attempt * 10) {
-                        if control.load(Ordering::SeqCst) != RUN {
-                            return Err(AppError::cancelled());
-                        }
-                        std::thread::sleep(Duration::from_millis(100));
+                Err(e) => {
+                    let _ = std::fs::remove_file(&part);
+                    if fresh_start {
+                        return Err(e);
+                    }
+                    tracing::warn!(id = %spec.id, error = %e, "download failed verification; starting over");
+                    fresh_start = true;
+                    if !self.with_current(&spec.id, control, |item| {
+                        item.status = Status::Downloading;
+                        item.received = 0;
+                    }) {
+                        return Err(AppError::cancelled());
                     }
                 }
-                Err(e) => return Err(e),
             }
-        }
-        self.set_status(&spec.id, Status::Verifying);
-        if let Err(e) = verify(&part, spec) {
-            let _ = std::fs::remove_file(&part);
-            return Err(e);
         }
         let dest = self.final_path(spec);
         if let Some(parent) = dest.parent() {
@@ -492,14 +625,49 @@ impl DownloadManager {
         Ok(dest)
     }
 
+    /// Transfers into `part`, retrying network failures with backoff.
+    fn fetch(
+        &self,
+        spec: &DownloadSpec,
+        part: &Path,
+        control: &Arc<AtomicU8>,
+    ) -> Result<(), AppError> {
+        let mut attempt = 0;
+        loop {
+            let before = file_len(part);
+            let failure = match self.transfer(spec, part, control) {
+                Ok(()) => return Ok(()),
+                Err(f) => f,
+            };
+            if !failure.retry || control.load(Ordering::SeqCst) != RUN {
+                return Err(failure.error);
+            }
+            if file_len(part) > before {
+                // Progress was made: a flaky connection, not a dead one.
+                attempt = 0;
+            }
+            let Some(&backoff) = BACKOFF_SECS.get(attempt) else {
+                return Err(failure.error);
+            };
+            attempt += 1;
+            let secs = if failure.error.code == ErrorCode::RateLimited {
+                RATE_LIMIT_WAIT_SECS
+            } else {
+                backoff
+            };
+            tracing::warn!(id = %spec.id, attempt, secs, error = %failure.error, "download interrupted; retrying");
+            Self::wait(control, secs)?;
+        }
+    }
+
     /// One HTTP attempt, appending to `part`.
     fn transfer(
         &self,
         spec: &DownloadSpec,
         part: &Path,
-        control: &AtomicU8,
-    ) -> Result<(), AppError> {
-        let have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
+        control: &Arc<AtomicU8>,
+    ) -> Result<(), Attempt> {
+        let have = file_len(part);
         if spec.expected_size.is_some_and(|s| s > 0 && have == s) {
             return Ok(());
         }
@@ -510,6 +678,9 @@ impl DownloadManager {
         let resp = req
             .call()
             .map_err(|e| net(format!("Download failed: {e}")))?;
+        if control.load(Ordering::SeqCst) != RUN {
+            return Err(AppError::cancelled().into());
+        }
         let status = resp.status().as_u16();
         let (append, start) = match status {
             206 => (true, have),
@@ -519,8 +690,7 @@ impl DownloadManager {
                 return Ok(());
             }
             404 | 410 => {
-                return Err(AppError::new(
-                    ErrorCode::Network,
+                return Err(fatal(
                     "The file is no longer available on the server (it may have been removed or archived)",
                 ));
             }
@@ -528,10 +698,11 @@ impl DownloadManager {
                 return Err(AppError::new(
                     ErrorCode::RateLimited,
                     "The server is rate limiting downloads; try again in a minute",
-                ));
+                )
+                .into());
             }
-            s if s >= 500 => return Err(net(format!("Server error (HTTP {s})"))),
-            s => return Err(net(format!("Unexpected response (HTTP {s})"))),
+            s if s >= 500 || s == 408 => return Err(net(format!("Server error (HTTP {s})")).into()),
+            s => return Err(fatal(format!("Unexpected response (HTTP {s})"))),
         };
         let content_len = resp
             .headers()
@@ -540,10 +711,9 @@ impl DownloadManager {
             .and_then(|v| v.parse::<u64>().ok());
         let total = content_len.map(|l| l + start).or(spec.expected_size);
         if total.is_some_and(|t| t > MAX_DOWNLOAD_BYTES) {
-            return Err(AppError::new(
-                ErrorCode::ArchiveTooLarge,
-                "The download is too large",
-            ));
+            return Err(
+                AppError::new(ErrorCode::ArchiveTooLarge, "The download is too large").into(),
+            );
         }
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -560,10 +730,11 @@ impl DownloadManager {
         let mut window_bytes = 0u64;
         let mut last_event = Instant::now();
         let mut bps = 0u64;
+        self.update_progress(&spec.id, control, received, total, 0);
         loop {
             if control.load(Ordering::SeqCst) != RUN {
                 let _ = file.flush();
-                return Err(AppError::cancelled());
+                return Err(AppError::cancelled().into());
             }
             let n = reader
                 .read(&mut buf)
@@ -571,15 +742,19 @@ impl DownloadManager {
             if n == 0 {
                 break;
             }
+            // A read can block for a long time; don't write after a pause
+            // or cancel, when another run may own the file.
+            if control.load(Ordering::SeqCst) != RUN {
+                return Err(AppError::cancelled().into());
+            }
             file.write_all(&buf[..n])
                 .map_err(|e| AppError::from_io("Writing the download", part, &e))?;
             received += n as u64;
             window_bytes += n as u64;
             if received > MAX_DOWNLOAD_BYTES {
-                return Err(AppError::new(
-                    ErrorCode::ArchiveTooLarge,
-                    "The download is too large",
-                ));
+                return Err(
+                    AppError::new(ErrorCode::ArchiveTooLarge, "The download is too large").into(),
+                );
             }
             // Bandwidth cap, shared evenly between active downloads.
             let cap = self.inner.bandwidth.load(Ordering::SeqCst);
@@ -600,17 +775,17 @@ impl DownloadManager {
                     as u64;
             }
             if last_event.elapsed() >= EVENT_INTERVAL {
-                self.update_progress(&spec.id, received, total, bps);
+                self.update_progress(&spec.id, control, received, total, bps);
                 last_event = Instant::now();
             }
         }
         file.sync_all()
             .map_err(|e| AppError::from_io("Writing the download", part, &e))?;
-        self.update_progress(&spec.id, received, total, 0);
+        self.update_progress(&spec.id, control, received, total, 0);
         if let Some(t) = total
             && received < t
         {
-            return Err(net("The connection closed before the download finished"));
+            return Err(net("The connection closed before the download finished").into());
         }
         Ok(())
     }

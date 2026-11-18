@@ -57,8 +57,12 @@ impl AppView {
                 && !self.dl_installing.contains(&item.spec.id)
                 && let Some(path) = item.path.clone()
             {
-                self.dl_installing.insert(item.spec.id.clone());
                 self.install_download(item.clone(), path, cx);
+            }
+            if item.status != Status::Failed {
+                // A later failure (after Retry) is reported again.
+                self.dl_installing
+                    .remove(&format!("failed:{}", item.spec.id));
             }
             if item.status == Status::Failed
                 && let Some(err) = &item.error
@@ -86,6 +90,8 @@ impl AppView {
         }
         let dm = self.downloads.clone();
         let id = item.spec.id.clone();
+        // Use the mod's update key so its row shows the spinner, unless an
+        // update of that mod is already running.
         let key = meta
             .remote_id
             .and_then(|r| {
@@ -95,26 +101,50 @@ impl AppView {
                     .find(|m| m.remote_id == Some(r))
                     .map(|m| format!("update:{}", m.id))
             })
+            .filter(|k| !self.is_pending(k))
             .unwrap_or_else(|| format!("install:{id}"));
+        if self.is_pending(&key) {
+            // Tried again on the next download change.
+            return;
+        }
+        self.dl_installing.insert(id.clone());
+        let label = format!("Installing {}", item.spec.title);
         self.run_with(
             key,
-            format!("Installing {}", item.spec.title),
+            label.clone(),
             true,
             cx,
             move |e, p| {
-                let report = e.install_archive(&path, meta, p)?;
-                if !keep {
+                // Failures come back as a value so the download can be
+                // marked failed (with Retry) instead of staying "Installing".
+                let report = e.install_archive(&path, meta, p);
+                if report.is_ok() && !keep {
                     let _ = std::fs::remove_file(&path);
                 }
                 Ok(report)
             },
             move |this, report, cx| {
-                if let Some(dm) = dm {
-                    dm.remove(&id);
-                }
+                this.dl_installing.remove(&id);
                 this.dl_dirty
                     .store(true, std::sync::atomic::Ordering::Relaxed);
-                this.after_install(report, cx);
+                match report {
+                    Ok(report) => {
+                        if let Some(dm) = dm {
+                            dm.remove(&id);
+                        }
+                        this.after_install(report, cx);
+                    }
+                    Err(e) => {
+                        if e.code != kombini_core::ErrorCode::Cancelled {
+                            this.error(&label, &e);
+                        }
+                        if let Some(dm) = dm {
+                            // Marked as already reported so it is not shown twice.
+                            this.dl_installing.insert(format!("failed:{id}"));
+                            dm.fail(&id, e);
+                        }
+                    }
+                }
             },
         );
     }
@@ -275,7 +305,10 @@ impl AppView {
                     dm.remove(id);
                 }));
             }
-            Status::Completed | Status::Verifying => {}
+            Status::Verifying => {
+                actions = actions.child(act("Cancel", i, |dm, id| dm.cancel(id)));
+            }
+            Status::Completed => {}
         }
         card()
             .p(px(12.))

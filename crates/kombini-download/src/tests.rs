@@ -216,3 +216,131 @@ fn remove_notifies_listener() {
     assert_eq!(seen.load(Ordering::SeqCst), before + 1);
     assert!(!m.remove("c"));
 }
+
+/// Answers the first `fail_first` requests with HTTP `code`, then serves
+/// `body`. With `stall`, a full response sends half the body and then hangs.
+fn serve_with(body: Vec<u8>, code: u16, fail_first: usize, stall: bool) -> Server {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/file.zip", listener.local_addr().unwrap());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let h = hits.clone();
+    let body = Arc::new(body);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let n = h.fetch_add(1, Ordering::SeqCst);
+            let body = body.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                    line.clear();
+                }
+                if n < fail_first {
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 {code} Nope\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    );
+                    return;
+                }
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+                if stall {
+                    let _ = stream.write_all(&body[..body.len() / 2]);
+                    std::thread::sleep(Duration::from_secs(120));
+                } else {
+                    let _ = stream.write_all(&body);
+                }
+            });
+        }
+    });
+    Server { url, hits }
+}
+
+#[test]
+fn cancel_and_pause_take_effect_while_the_transfer_hangs() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = body(200_000);
+    let server = serve_with(data.clone(), 200, 0, true);
+    let m = DownloadManager::new(dir.path(), 1, |_| {});
+    m.enqueue(spec("s", &server.url, &data));
+    m.enqueue(spec("t", &server.url, &data));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let part = dir.path().join("s.part");
+    while file_len(&part) < 100_000 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(file_len(&part), 100_000);
+    // The worker is stuck in a read; pausing frees the queue at once.
+    m.pause("s");
+    assert_eq!(m.item("s").unwrap().status, Status::Paused);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(m.item("t").unwrap().status, Status::Downloading);
+    m.cancel("t");
+    assert_eq!(m.item("t").unwrap().status, Status::Cancelled);
+    m.cancel("s");
+    assert_eq!(m.item("s").unwrap().status, Status::Cancelled);
+    assert!(m.wait_idle(Duration::from_secs(2)));
+    assert!(!dir.path().join("s.part").exists());
+}
+
+#[test]
+fn server_errors_are_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = body(20_000);
+    let server = serve_with(data.clone(), 503, 1, false);
+    let m = DownloadManager::new(dir.path(), 1, |_| {});
+    m.enqueue(spec("e", &server.url, &data));
+    assert!(m.wait_idle(Duration::from_secs(20)));
+    let item = m.item("e").unwrap();
+    assert_eq!(item.status, Status::Completed, "{:?}", item.error);
+    assert_eq!(server.hits.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn missing_files_fail_without_retrying() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = body(1_000);
+    let server = serve_with(data.clone(), 404, usize::MAX, false);
+    let m = DownloadManager::new(dir.path(), 1, |_| {});
+    m.enqueue(spec("g", &server.url, &data));
+    assert!(m.wait_idle(Duration::from_secs(5)));
+    assert_eq!(m.item("g").unwrap().status, Status::Failed);
+    assert_eq!(server.hits.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_stale_partial_file_is_downloaded_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = body(30_000);
+    let server = serve(data.clone(), false, Duration::ZERO);
+    std::fs::write(dir.path().join("x.part"), vec![7u8; 30_000]).unwrap();
+    let m = DownloadManager::new(dir.path(), 1, |_| {});
+    m.enqueue(spec("x", &server.url, &data));
+    assert!(m.wait_idle(Duration::from_secs(20)));
+    let item = m.item("x").unwrap();
+    assert_eq!(item.status, Status::Completed, "{:?}", item.error);
+    assert_eq!(std::fs::read(item.path.unwrap()).unwrap(), data);
+}
+
+#[test]
+fn a_failed_install_retries_without_downloading() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = body(5_000);
+    let server = serve(data.clone(), false, Duration::ZERO);
+    let m = DownloadManager::new(dir.path(), 1, |_| {});
+    m.enqueue(spec("i", &server.url, &data));
+    assert!(m.wait_idle(Duration::from_secs(20)));
+    m.fail("i", AppError::new(ErrorCode::ExtractFailed, "bad archive"));
+    assert_eq!(m.item("i").unwrap().status, Status::Failed);
+    m.resume("i");
+    assert_eq!(m.item("i").unwrap().status, Status::Completed);
+    assert_eq!(server.hits.load(Ordering::SeqCst), 1);
+}
