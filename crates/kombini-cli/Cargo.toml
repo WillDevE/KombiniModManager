@@ -1,0 +1,29 @@
+[package]
+name = "kombini-cli"
+description = "Headless command-line harness for the Kombini engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "kombini"
+path = "src/main.rs"
+
+[dependencies]
+kombini-core = { path = "../kombini-core" }
+kombini-engine = { path = "../kombini-engine" }
+kombini-vpk = { path = "../kombini-vpk" }
+kombini-steam = { path = "../kombini-steam" }
+kombini-import = { path = "../kombini-import" }
+kombini-gamebanana = { path = "../kombini-gamebanana" }
+kombini-archive = { path = "../kombini-archive" }
+clap = { version = "4", features = ["derive"] }
+serde = "1"
+serde_json = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+kombini-gameinfo = { path = "../kombini-gameinfo" }

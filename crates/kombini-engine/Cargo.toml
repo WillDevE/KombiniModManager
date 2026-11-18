@@ -1,0 +1,36 @@
+[package]
+name = "kombini-engine"
+description = "Application services: library, layout transactions, snapshots, health, launch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kombini-core = { path = "../kombini-core" }
+kombini-vpk = { path = "../kombini-vpk" }
+kombini-gameinfo = { path = "../kombini-gameinfo" }
+kombini-archive = { path = "../kombini-archive" }
+kombini-steam = { path = "../kombini-steam" }
+kombini-storage = { path = "../kombini-storage" }
+kombini-repair = { path = "../kombini-repair" }
+kombini-source2 = { path = "../kombini-source2" }
+png = "0.18"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+parking_lot = "0.12"
+thiserror = "2"
+tracing = "0.1"
+directories = "6"
+notify = "8"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"

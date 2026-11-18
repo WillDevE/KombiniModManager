@@ -1,0 +1,18 @@
+[package]
+name = "kombini-repair"
+description = "Mod compatibility checks and repairs (ported from vpkmerge-core, MIT)"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+rust-version.workspace = true
+authors = ["esoc (vpkmerge)", "Kombini"]
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+kombini-vpk = { path = "../kombini-vpk" }
+kombini-source2 = { path = "../kombini-source2" }
+
+[dev-dependencies]
+tempfile = "3"
