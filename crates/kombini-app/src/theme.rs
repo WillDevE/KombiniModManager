@@ -18,7 +18,9 @@ pub const TEXT: u32 = 0xe6e6ec;
 pub const MUTED: u32 = 0x9a9aa5;
 pub const FAINT: u32 = 0x6b6b75;
 
-pub const ROW_H: f32 = 48.0;
+pub const ROW_H: f32 = 60.0;
+/// Mod thumbnail size in list rows.
+pub const THUMB: f32 = 44.0;
 pub const TOPBAR_H: f32 = 56.0;
 pub const RADIUS: f32 = 8.0;
 

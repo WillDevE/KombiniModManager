@@ -206,12 +206,85 @@ impl Render for DragGhost {
     }
 }
 
-/// 32px square: the mod's thumbnail when cached, else a package icon.
+/// Widths of the mod list's fixed columns.
+const COL_HERO: f32 = 150.;
+const COL_STATUS: f32 = 160.;
+const COL_TOGGLE: f32 = 64.;
+/// Load-order rank, before the thumbnail.
+const COL_RANK: f32 = 32.;
+
+/// A fixed-width mod list column with a divider line on its left.
+fn list_col(width: f32) -> Div {
+    div()
+        .flex_none()
+        .w(px(width))
+        .h_full()
+        .flex()
+        .items_center()
+        .px(px(10.))
+        .overflow_hidden()
+        .border_l_1()
+        .border_color(ca(BORDER, 0.6))
+}
+
+/// Column titles above the mod list.
+fn list_header() -> Div {
+    let label = |t: &'static str| {
+        div()
+            .text_xs()
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(c(FAINT))
+            .child(t)
+    };
+    div()
+        .flex_none()
+        .h(px(30.))
+        .w_full()
+        .flex()
+        .items_center()
+        .bg(c(RAISED))
+        .border_b_1()
+        .border_color(c(BORDER))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(10.))
+                .child(div().flex_none().w(px(16.)))
+                .child(div().flex_none().w(px(COL_RANK)).child(label("#")))
+                .child(label("Mod")),
+        )
+        .child(list_col(COL_HERO).child(label("Hero")))
+        .child(list_col(COL_STATUS).child(label("Status")))
+        .child(list_col(COL_TOGGLE).justify_center().child(label("On")))
+}
+
+/// A chip that truncates its text to the column width.
+fn fit_chip(text: impl Into<SharedString>, color: u32) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .h(px(22.))
+        .max_w_full()
+        .min_w_0()
+        .px(px(10.))
+        .rounded(px(999.))
+        .bg(ca(color, 0.16))
+        .text_xs()
+        .text_color(c(color))
+        .child(div().truncate().child(text.into()))
+}
+
+/// The mod's thumbnail when cached, else a package icon.
 pub fn thumb_tile(path: Option<std::path::PathBuf>) -> Div {
     let tile = div()
         .flex_none()
-        .size(px(32.))
-        .rounded(px(6.))
+        .size(px(THUMB))
+        .rounded(px(7.))
         .overflow_hidden()
         .bg(c(HOVER))
         .flex()
@@ -221,7 +294,7 @@ pub fn thumb_tile(path: Option<std::path::PathBuf>) -> Div {
         Some(p) => tile.child(img(p).size_full().object_fit(ObjectFit::Cover)),
         None => tile.child(
             Icon::new(Lucide::Package)
-                .size(px(16.))
+                .size(px(20.))
                 .text_color(c(FAINT)),
         ),
     }
@@ -498,17 +571,31 @@ impl AppView {
             .px(px(16.))
             .pb(px(if bar.is_some() { 76. } else { 12. }))
             .child(
-                uniform_list(
-                    "mod-list",
-                    count,
-                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                        range
-                            .filter_map(|ix| this.render_row(ix, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(&self.list_scroll)
-                .size_full(),
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .rounded(px(RADIUS))
+                    .border_1()
+                    .border_color(c(BORDER))
+                    .bg(c(PANEL))
+                    .overflow_hidden()
+                    .child(list_header())
+                    .child(
+                        div().flex_1().min_h_0().w_full().child(
+                            uniform_list(
+                                "mod-list",
+                                count,
+                                cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                                    range
+                                        .filter_map(|ix| this.render_row(ix, cx))
+                                        .collect::<Vec<_>>()
+                                }),
+                            )
+                            .track_scroll(&self.list_scroll)
+                            .size_full(),
+                        ),
+                    ),
             )
             .children(bar)
             .into_any_element()
@@ -558,26 +645,27 @@ impl AppView {
         let toggle_id = id.clone();
         let select_id = id.clone();
         let drop_rank = rank.flatten();
+        // Most urgent first; the column fits two.
+        let status: Vec<Div> = [
+            problem.then(|| fit_chip("Problem", CORAL)),
+            update.then(|| fit_chip("Update", ACCENT)),
+            issue_chip,
+        ]
+        .into_iter()
+        .flatten()
+        .take(2)
+        .collect();
         Some(
             div()
                 .id(("mod-row", ix))
+                .relative()
                 .h(px(ROW_H))
                 .w_full()
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .px(px(10.))
-                .mb(px(2.))
-                .rounded(px(RADIUS))
                 .cursor_pointer()
-                .border_1()
-                .border_color(if in_multi {
-                    ca(ACCENT, 0.55)
-                } else if selected {
-                    c(PRIMARY)
-                } else {
-                    ca(BORDER, 0.0)
-                })
+                .border_b_1()
+                .border_color(ca(BORDER, 0.6))
                 .bg(if in_multi {
                     ca(ACCENT, 0.10)
                 } else if selected {
@@ -626,101 +714,134 @@ impl AppView {
                         },
                     ))
                 })
+                .when(selected || in_multi, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(px(3.))
+                            .bg(c(if in_multi { ACCENT } else { PRIMARY })),
+                    )
+                })
                 .child(
                     div()
-                        .id(("grip", ix))
-                        .flex_none()
-                        .w(px(16.))
-                        .flex()
-                        .justify_center()
-                        .when(in_multi, |d| {
-                            d.child(
-                                Icon::new(gpui_kit::component::IconName::Check)
-                                    .size(px(14.))
-                                    .text_color(c(ACCENT)),
-                            )
-                        })
-                        .when(on && !in_multi, |d| {
-                            d.cursor_grab()
-                                .child(
-                                    Icon::new(Lucide::GripVertical)
-                                        .size(px(16.))
-                                        .text_color(c(FAINT)),
-                                )
-                                .tooltip(|window, cx| {
-                                    gpui_kit::component::tooltip::Tooltip::new(
-                                        "Drag to change load order",
-                                    )
-                                    .build(window, cx)
-                                })
-                        }),
-                )
-                .child(
-                    div()
-                        .w(px(28.))
-                        .flex_none()
-                        .text_xs()
-                        .text_color(if on { c(ACCENT) } else { c(FAINT) })
-                        .child(match rank.flatten() {
-                            Some(r) => format!("#{r}"),
-                            None => "–".to_owned(),
-                        }),
-                )
-                .child(thumb_tile(thumb))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
                         .flex_1()
                         .min_w_0()
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .px(px(10.))
                         .child(
                             div()
+                                .id(("grip", ix))
+                                .flex_none()
+                                .w(px(16.))
                                 .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_sm()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(if on { c(TEXT) } else { c(MUTED) })
-                                        .child(title),
-                                )
-                                .when(favorite, |d| {
+                                .justify_center()
+                                .when(in_multi, |d| {
                                     d.child(
-                                        Icon::new(gpui_kit::component::IconName::StarFill)
-                                            .size(px(12.))
-                                            .text_color(c(AMBER)),
+                                        Icon::new(gpui_kit::component::IconName::Check)
+                                            .size(px(14.))
+                                            .text_color(c(ACCENT)),
                                     )
                                 })
-                                .when(pinned, |d| d.child(chip("Pinned", INFO))),
+                                .when(on && !in_multi, |d| {
+                                    d.cursor_grab()
+                                        .child(
+                                            Icon::new(Lucide::GripVertical)
+                                                .size(px(16.))
+                                                .text_color(c(FAINT)),
+                                        )
+                                        .tooltip(|window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                "Drag to change load order",
+                                            )
+                                            .build(window, cx)
+                                        })
+                                }),
                         )
                         .child(
                             div()
-                                .flex()
-                                .gap(px(6.))
+                                .w(px(COL_RANK))
+                                .flex_none()
                                 .text_xs()
-                                .text_color(c(FAINT))
-                                .child(size)
-                                .when(variants > 1, |d| d.child(format!("· {variants} variants")))
-                                .when_some(group, |d, g| d.child(format!("· {g}"))),
+                                .text_color(if on { c(ACCENT) } else { c(FAINT) })
+                                .child(match rank.flatten() {
+                                    Some(r) => format!("#{r}"),
+                                    None => "–".to_owned(),
+                                }),
+                        )
+                        .child(thumb_tile(thumb))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .text_sm()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(if on { c(TEXT) } else { c(MUTED) })
+                                                .child(title),
+                                        )
+                                        .when(favorite, |d| {
+                                            d.child(
+                                                Icon::new(gpui_kit::component::IconName::StarFill)
+                                                    .size(px(12.))
+                                                    .text_color(c(AMBER)),
+                                            )
+                                        })
+                                        .when(pinned, |d| d.child(chip("Pinned", INFO))),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap(px(6.))
+                                        .text_xs()
+                                        .text_color(c(FAINT))
+                                        .child(size)
+                                        .when(variants > 1, |d| {
+                                            d.child(format!("· {variants} variants"))
+                                        })
+                                        .when_some(group, |d, g| d.child(format!("· {g}"))),
+                                ),
                         ),
                 )
-                .when_some(hero, |d, h| d.child(chip(h, MUTED)))
-                .when(update, |d| d.child(chip("Update", ACCENT)))
-                .when(problem, |d| d.child(chip("Problem", CORAL)))
-                .children(issue_chip)
-                .when(pending, |d| {
-                    d.child(gpui_kit::component::spinner::Spinner::new().xsmall())
-                })
+                .child(list_col(COL_HERO).children(hero.map(|h| fit_chip(h, MUTED))))
                 .child(
-                    Switch::new(("mod-switch", ix))
-                        .checked(shown_on)
-                        .disabled(pending || self.launch.phase.busy())
-                        .tooltip(if on { "Disable" } else { "Enable" })
-                        .on_click(cx.listener(move |this, checked: &bool, _, cx| {
-                            this.set_enabled(vec![toggle_id.clone()], *checked, cx);
-                        })),
+                    list_col(COL_STATUS)
+                        .flex_col()
+                        .items_start()
+                        .justify_center()
+                        .gap(px(4.))
+                        .children(status),
+                )
+                .child(
+                    list_col(COL_TOGGLE)
+                        .justify_center()
+                        .gap(px(4.))
+                        .when(pending, |d| {
+                            d.child(gpui_kit::component::spinner::Spinner::new().xsmall())
+                        })
+                        .child(
+                            Switch::new(("mod-switch", ix))
+                                .checked(shown_on)
+                                .disabled(pending || self.launch.phase.busy())
+                                .tooltip(if on { "Disable" } else { "Enable" })
+                                .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                    this.set_enabled(vec![toggle_id.clone()], *checked, cx);
+                                })),
+                        ),
                 )
                 .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
                     this.click_row(select_id.clone(), ev.modifiers(), cx);
