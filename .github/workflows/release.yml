@@ -1,5 +1,6 @@
 # Publishes a release when a `v*` tag is pushed: the `dist` build of the app,
 # compressed with UPX, plus its SHA-256. This is the only distribution channel.
+# Tests aren't rerun here: only tag a commit whose `ci` run on main is green.
 name: release
 
 on:
@@ -34,9 +35,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: dist
-
-      - name: Test
-        run: cargo test --workspace --locked
 
       - name: Build
         run: cargo build --profile dist -p kombini-app --locked

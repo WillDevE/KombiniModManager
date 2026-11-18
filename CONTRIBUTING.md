@@ -40,6 +40,6 @@ A few tests read the real game read-only when `DEADLOCK_PAK` points at
 Releases are built only by GitHub Actions:
 
 1. Bump `version` in the root `Cargo.toml` and commit.
-2. Tag the commit `v<version>` (for example, `v0.2.0`) and push the tag.
+2. Wait for the `ci` run on that commit to pass, then tag it `v<version>` (for example, `v0.2.0`) and push the tag.
 3. The `release` workflow builds the `dist` profile, compresses the exe with UPX, and publishes it
    with `SHA256SUMS.txt` to a GitHub release.
