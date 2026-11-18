@@ -3831,7 +3831,7 @@ dependencies = [
  "byteorder",
  "lz4_flex",
  "ruzstd",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
