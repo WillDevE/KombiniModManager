@@ -781,17 +781,11 @@ impl AppView {
             .gap(px(12.))
             .child(heading("Crosshair"))
             .child(muted(
-                "Kombini writes these settings into this profile's autoexec, so they apply every time the game starts with this profile. Your own autoexec lines are left alone.",
+                "Saved to this profile's autoexec. Your own autoexec lines are left alone.",
             ))
             .child(designer)
             .child(div().pt(px(8.)).child(heading("Autoexec commands")))
-            .child(muted(
-                "Common console commands. Added ones go into a Kombini section of the autoexec; remove them here the same way.",
-            ))
             .child(self.render_command_library(busy, cx))
-            .child(faint(
-                "Crosshair layout and the command list are based on Grimoire by esoc (MIT).",
-            ))
             .into_any_element()
     }
 }

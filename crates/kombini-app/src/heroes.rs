@@ -476,9 +476,7 @@ impl AppView {
                     .flex_col()
                     .gap(px(2.))
                     .child(heading("Heroes"))
-                    .child(muted(format!(
-                        "Same order as the game's hero select. {with_mods} hero(es) have mods."
-                    ))),
+                    .child(muted(format!("{with_mods} with mods"))),
             )
             .child(
                 Button::new("shuffle-all")
@@ -772,7 +770,6 @@ impl AppView {
             })
             .when(!others.is_empty(), |d| {
                 d.child(section_title(format!("Other {} mods", e.hero)))
-                    .child(faint("Sounds, icons and other mods for this hero. These can be combined with any skin."))
                     .child(div().flex().flex_col().gap(px(6.)).children(others))
             })
             .into_any_element()

@@ -196,7 +196,7 @@ impl AppView {
                     .gap(px(10.))
                     .child(section_title(format!("Launch · profile {}", profile.name)))
                     .child(faint(
-                        "Steam launch options used by Launch Modded for this profile. Kombini adds +exec autoexec when the profile has an autoexec.",
+                        "Used by Launch Modded for this profile.",
                     ))
                     .child(
                         div()

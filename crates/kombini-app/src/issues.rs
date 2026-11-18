@@ -350,7 +350,7 @@ impl AppView {
             .items_center()
             .gap(px(8.))
             .child(div().flex_1().child(muted(
-                "Game updates can break older mods: cameras, hero data, text and sounds. Kombini compares each mod with your installed game and fixes what it safely can. Nothing the mod author changed is overwritten.",
+                "Fixes what it safely can after game updates; nothing the mod author changed is overwritten.",
             )))
             .child(
                 Button::new("issues-rescan")
@@ -424,28 +424,6 @@ impl AppView {
             .child(head)
             .when(!version.is_empty(), |d| d.child(faint(version)))
             .child(body)
-            .child(
-                div()
-                    .id("issues-credit")
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .text_xs()
-                    .text_color(c(FAINT))
-                    .child("Based on the mod repairs in Grimoire (vpkmerge by esoc).")
-                    .child(
-                        div()
-                            .id("issues-credit-link")
-                            .text_color(c(INFO))
-                            .cursor_pointer()
-                            .hover(|s| s.underline())
-                            .child("Credits")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.modal = None;
-                                this.set_tab(crate::app::Tab::Settings, cx);
-                            })),
-                    ),
-            )
             .into_any_element()
     }
 }

@@ -1132,7 +1132,7 @@ impl AppView {
                     .gap(px(8.))
                     .child(section_title("Load order"))
                     .child(muted(format!(
-                        "Position #{} of {} enabled. Higher mods win when files overlap. Drag rows to reorder.",
+                        "#{} of {} enabled. Higher mods win when files overlap.",
                         pos + 1,
                         order.len()
                     )))
@@ -1143,7 +1143,8 @@ impl AppView {
                             .child(
                                 Button::new("mv-top")
                                     .xsmall()
-                                    .icon(Lucide::ArrowUpToLine).label("Top")
+                                    .icon(Lucide::ArrowUpToLine)
+                                    .label("Top")
                                     .disabled(pos == 0 || reordering)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.move_enabled(a.clone(), 0, cx)
@@ -1170,7 +1171,8 @@ impl AppView {
                             .child(
                                 Button::new("mv-bottom")
                                     .xsmall()
-                                    .icon(Lucide::ArrowDownToLine).label("Bottom")
+                                    .icon(Lucide::ArrowDownToLine)
+                                    .label("Bottom")
                                     .disabled(pos >= last || reordering)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.move_enabled(d2.clone(), usize::MAX, cx)
@@ -1189,7 +1191,6 @@ impl AppView {
                     .flex_col()
                     .gap(px(6.))
                     .child(section_title("Variants"))
-                    .child(muted("Choose which parts of this mod are loaded."))
                     .children(roots.iter().enumerate().map(|(i, (rel, sel, place))| {
                         let rel2 = rel.clone();
                         let current: Vec<String> = roots
