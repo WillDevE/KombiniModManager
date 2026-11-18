@@ -1,10 +1,11 @@
 # cargo-deny configuration (CI `supply-chain` job).
 
+[graph]
+# The app ships for Windows only.
+targets = ["x86_64-pc-windows-msvc"]
+
 [advisories]
-# Unmaintained crates we cannot replace ourselves: both come in through the
-# GPUI UI kit (gpui-component / gpui-base). Neither has a known vulnerability.
-# Drop these once the kit moves off them.
-ignore = [
-    { id = "RUSTSEC-2024-0384", reason = "`instant` is unmaintained; pulled in by gpui-base/gpui-component, no vulnerability" },
-    { id = "RUSTSEC-2024-0436", reason = "`paste` is unmaintained; compile-time macro used by gpui-component, no vulnerability" },
-]
+# Security advisories always fail. "Unmaintained" notices only fail for our own
+# direct dependencies: the ones deep in the GPUI UI kit (instant, paste,
+# rustls-pemfile, ...) are the kit's to replace, not ours.
+unmaintained = "workspace"
