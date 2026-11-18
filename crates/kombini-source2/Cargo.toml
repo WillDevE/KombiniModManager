@@ -1,0 +1,14 @@
+[package]
+name = "kombini-source2"
+description = "Source 2 resource container and binary KV3 codec (vendored from morphic, MIT)"
+version.workspace = true
+edition = "2021"
+license = "MIT"
+rust-version.workspace = true
+authors = ["esoc (morphic)", "Kombini"]
+
+[dependencies]
+thiserror = "1"
+byteorder = "1"
+lz4_flex = { version = "0.11", default-features = false, features = ["std"] }
+ruzstd = "0.8.3"

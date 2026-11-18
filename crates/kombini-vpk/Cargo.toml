@@ -1,0 +1,21 @@
+[package]
+name = "kombini-vpk"
+description = "Valve VPK v1/v2 reader, writer and merger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = "2"
+crc32fast = "1"
+md-5 = "0.10"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

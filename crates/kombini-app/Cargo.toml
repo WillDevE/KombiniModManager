@@ -1,0 +1,37 @@
+[package]
+name = "kombini-app"
+description = "Kombini Mod Manager desktop app (GPUI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "kombini-mod-manager"
+path = "src/main.rs"
+
+[dependencies]
+kombini-core = { path = "../kombini-core" }
+kombini-engine = { path = "../kombini-engine" }
+kombini-gamebanana = { path = "../kombini-gamebanana" }
+kombini-download = { path = "../kombini-download" }
+kombini-import = { path = "../kombini-import" }
+kombini-steam = { path = "../kombini-steam" }
+kombini-vpk = { path = "../kombini-vpk" }
+kombini-gameinfo = { path = "../kombini-gameinfo" }
+kombini-storage = { path = "../kombini-storage" }
+gpui-kit = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+parking_lot = "0.12"
+rodio = { version = "0.23", default-features = false, features = ["playback", "mp3", "wav"] }
+kombini-source2 = { path = "../kombini-source2" }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"

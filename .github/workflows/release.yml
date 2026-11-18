@@ -1,0 +1,73 @@
+# Publishes a release when a `v*` tag is pushed: the `dist` build of the app,
+# compressed with UPX, plus its SHA-256. This is the only distribution channel.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  UPX_VERSION: "5.3.0"
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches Cargo.toml
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
+            Select-Object -First 1).Matches[0].Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} does not match Cargo.toml version $version"
+          }
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dist
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build
+        run: cargo build --profile dist -p kombini-app --locked
+
+      - name: Install UPX
+        shell: pwsh
+        run: |
+          $name = "upx-$env:UPX_VERSION-win64"
+          Invoke-WebRequest "https://github.com/upx/upx/releases/download/v$env:UPX_VERSION/$name.zip" -OutFile upx.zip
+          Expand-Archive upx.zip -DestinationPath $env:RUNNER_TEMP
+          "$env:RUNNER_TEMP\$name" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Compress and checksum
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $exe = "out\KombiniModManager-${{ github.ref_name }}-windows-x64.exe"
+          Copy-Item target\dist\kombini-mod-manager.exe $exe
+          upx --best --lzma $exe
+          upx -t $exe
+          Push-Location out
+          Get-ChildItem *.exe | ForEach-Object {
+            "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Out-File -Encoding ascii SHA256SUMS.txt
+          Pop-Location
+          Get-ChildItem out | Format-Table Name, Length
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/*.exe
+            out/SHA256SUMS.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true

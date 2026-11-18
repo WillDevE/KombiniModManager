@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.88"
+authors = ["Kombini"]
+repository = "https://github.com/WillDevE/KombiniModManager"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Redistributable build: `cargo build --profile dist -p kombini-app`.
+# Smallest exe: whole-program LTO and size-oriented optimisation.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+opt-level = "s"
+
+[profile.dev.package."*"]
+opt-level = 2

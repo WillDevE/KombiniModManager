@@ -1,0 +1,31 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Discover
+        2. ...
+  - type: input
+    id: version
+    attributes:
+      label: Kombini version
+      description: Shown in Settings.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Attach or paste `%LOCALAPPDATA%\Kombini\ModManager\data\logs\app.log` (check it for anything private first).
+      render: text
