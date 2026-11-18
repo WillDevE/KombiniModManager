@@ -274,10 +274,9 @@ impl AppView {
                                                 .icon(IconName::ExternalLink)
                                                 .label("All updates")
                                                 .on_click(move |_, _, cx| {
-                                                    cx.open_url(&format!(
-                                                        "{}/updates",
-                                                        url.trim_end_matches('/')
-                                                    ))
+                                                    cx.open_url(
+                                                        &kombini_gamebanana::links::updates_page_url(&url),
+                                                    )
                                                 }),
                                         )
                                     }),

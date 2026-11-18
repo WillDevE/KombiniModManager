@@ -169,8 +169,61 @@ pub fn parse(input: &str) -> Option<InstallRequest> {
     None
 }
 
+/// The "Updates" tab of a submission page.
+///
+/// GameBanana's form is `/<section>/updates/<id>`; appending `/updates`
+/// to the page URL instead redirects to an unrelated game's hub.
+/// Anything that isn't a `/<section>/<id>` page URL is returned unchanged.
+pub fn updates_page_url(page_url: &str) -> String {
+    let base = page_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(page_url)
+        .trim_end_matches('/');
+    if let Some((head, id)) = base.rsplit_once('/')
+        && !id.is_empty()
+        && id.bytes().all(|b| b.is_ascii_digit())
+        && let Some((root, section)) = head.rsplit_once('/')
+        && !section.is_empty()
+        && !section.contains('.')
+        && section != "updates"
+    {
+        return format!("{root}/{section}/updates/{id}");
+    }
+    page_url.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn updates_page_url_inserts_the_updates_segment() {
+        assert_eq!(
+            updates_page_url("https://gamebanana.com/mods/610279"),
+            "https://gamebanana.com/mods/updates/610279"
+        );
+        assert_eq!(
+            updates_page_url("https://gamebanana.com/sounds/72000/"),
+            "https://gamebanana.com/sounds/updates/72000"
+        );
+        assert_eq!(
+            updates_page_url("https://gamebanana.com/mods/12?file=99#x"),
+            "https://gamebanana.com/mods/updates/12"
+        );
+    }
+
+    #[test]
+    fn updates_page_url_leaves_other_urls_alone() {
+        for url in [
+            "https://gamebanana.com/mods/updates/5",
+            "https://gamebanana.com/mods/cats/46154x",
+            "https://gamebanana.com/123",
+            "https://gamebanana.com/",
+            "",
+        ] {
+            assert_eq!(updates_page_url(url), url);
+        }
+    }
     use super::*;
 
     #[test]
