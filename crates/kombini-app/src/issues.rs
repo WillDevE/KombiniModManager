@@ -16,7 +16,7 @@ use gpui_kit::component::{Disableable, Icon, IconName, Sizable};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use kombini_core::ModId;
-use kombini_engine::repair::{ModIssue, ModIssues};
+use kombini_engine::repair::{IssueKind, ModIssue, ModIssues};
 use kombini_engine::{NoProgress, Progress};
 use std::collections::HashMap;
 
@@ -199,12 +199,25 @@ impl AppView {
     }
 
     /// Row chip: confirmed findings first, then the date estimate.
+    ///
+    /// Only findings that visibly break a mod in game (camera points, outdated
+    /// game data) earn a row chip, as in Grimoire. Sound, text and skeleton
+    /// findings stay in the details pane and the Mod issues panel.
     pub fn issue_chip(&self, id: &ModId) -> Option<Div> {
         if let Some(m) = self.issues.by_mod.get(id) {
-            if m.repairable() > 0 {
+            let visible = m
+                .issues
+                .iter()
+                .filter(|i| matches!(i.kind, IssueKind::Camera | IssueKind::OutdatedData));
+            let (mut any, mut fixable) = (false, false);
+            for i in visible {
+                any = true;
+                fixable |= i.repairable;
+            }
+            if fixable {
                 return Some(chip("Fix available", AMBER));
             }
-            if !m.issues.is_empty() {
+            if any {
                 return Some(chip("Needs update", CORAL));
             }
         }

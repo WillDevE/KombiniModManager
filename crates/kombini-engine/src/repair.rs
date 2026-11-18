@@ -462,7 +462,9 @@ fn check_root(
                         IssueKind::Skeleton => {
                             "Uses an older skeleton layout than the game.".to_owned()
                         }
-                        IssueKind::Sounds => "Model is missing its sound bindings.".to_owned(),
+                        IssueKind::Sounds => {
+                            "Footstep and movement sounds are missing from this model.".to_owned()
+                        }
                         _ => String::new(),
                     }
                 } else {
