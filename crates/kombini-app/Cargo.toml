@@ -34,4 +34,4 @@ rodio = { version = "0.23", default-features = false, features = ["playback", "m
 kombini-source2 = { path = "../kombini-source2" }
 
 [target.'cfg(windows)'.dependencies]
-winreg = "0.55"
+winreg = "0.56"
