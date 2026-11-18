@@ -1,0 +1,10 @@
+# cargo-deny configuration (CI `supply-chain` job).
+
+[advisories]
+# Unmaintained crates we cannot replace ourselves: both come in through the
+# GPUI UI kit (gpui-component / gpui-base). Neither has a known vulnerability.
+# Drop these once the kit moves off them.
+ignore = [
+    { id = "RUSTSEC-2024-0384", reason = "`instant` is unmaintained; pulled in by gpui-base/gpui-component, no vulnerability" },
+    { id = "RUSTSEC-2024-0436", reason = "`paste` is unmaintained; compile-time macro used by gpui-component, no vulnerability" },
+]
