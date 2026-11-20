@@ -1,9 +1,12 @@
 //! Hero Locker: mods grouped by hero, one active skin per hero, swap prompt
 //! and shuffle.
 //!
-//! A skin is a mod GameBanana files under a hero (or a local mod the user
-//! assigned to one); see `Mod::is_skin`. Other hero mods (sounds, icons) are
-//! listed separately and combine freely.
+//! A skin is a mod GameBanana files under a hero (or under "Skins" with a
+//! hero found in its files, or one the user assigned); see `Mod::is_skin`.
+//! The skin files of one GameBanana page form one skin card (its variants).
+//! A page file with no hero of its own (a voice pack next to the model)
+//! belongs to the page's hero. Other hero mods (sounds, icons) are listed
+//! separately and combine freely.
 
 use crate::app::AppView;
 use crate::icons::Lucide;
@@ -19,6 +22,8 @@ use kombini_core::{Mod, ModId};
 use std::collections::BTreeMap;
 
 const SKIN_CARD_W: f32 = 200.;
+/// Height of a skin card's text panel (title, author, files, buttons).
+const SKIN_INFO_H: f32 = 104.;
 /// The game's hero select has nine heroes per row.
 const GRID_COLUMNS: f32 = 9.;
 const GRID_PAD: f32 = 20.;
@@ -53,13 +58,102 @@ fn stack_badge(n: usize) -> Div {
         .child(format!("{n}"))
 }
 
+/// One skin: the skin files of one GameBanana page (or one local mod).
+#[derive(Clone)]
+pub struct SkinCard {
+    /// The GameBanana page, if the files come from one.
+    pub page: Option<u64>,
+    /// The card's files, first file of the page first.
+    pub ids: Vec<ModId>,
+    /// The ones that are on.
+    pub on: Vec<ModId>,
+}
+
+impl SkinCard {
+    /// The file that stands for the card: the first one on, else the first.
+    pub fn primary(&self) -> &ModId {
+        self.on.first().unwrap_or(&self.ids[0])
+    }
+
+    pub fn is_on(&self) -> bool {
+        !self.on.is_empty()
+    }
+}
+
 /// One hero's mods.
 #[derive(Clone)]
 pub struct HeroEntry {
     pub hero: String,
-    pub skins: Vec<ModId>,
+    pub skins: Vec<SkinCard>,
     pub others: Vec<ModId>,
-    pub active: Vec<ModId>,
+}
+
+impl HeroEntry {
+    pub fn empty(hero: String) -> Self {
+        Self {
+            hero,
+            skins: Vec::new(),
+            others: Vec::new(),
+        }
+    }
+
+    /// Skin cards that are on (more than one means they stack).
+    pub fn active_cards(&self) -> Vec<&SkinCard> {
+        self.skins.iter().filter(|c| c.is_on()).collect()
+    }
+
+    /// Every skin file that is on.
+    pub fn active_files(&self) -> Vec<ModId> {
+        self.skins
+            .iter()
+            .flat_map(|c| c.on.iter().cloned())
+            .collect()
+    }
+
+    pub fn card_of(&self, id: &ModId) -> Option<&SkinCard> {
+        self.skins.iter().find(|c| c.ids.contains(id))
+    }
+}
+
+/// The hero each mod belongs to: its own (override, category, files), or
+/// for a page file with none, the hero of its GameBanana page.
+pub fn resolve_heroes<'a>(mods: impl IntoIterator<Item = &'a Mod>) -> BTreeMap<ModId, String> {
+    let list: Vec<&Mod> = mods.into_iter().collect();
+    let mut page_hero: BTreeMap<u64, &str> = BTreeMap::new();
+    let mut own: Vec<&Mod> = list.clone();
+    own.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+    for m in &own {
+        if let (Some(r), Some(h)) = (m.remote_id, m.primary_hero()) {
+            page_hero.entry(r).or_insert(h);
+        }
+    }
+    list.iter()
+        .filter_map(|m| {
+            let hero = m
+                .primary_hero()
+                .or_else(|| m.remote_id.and_then(|r| page_hero.get(&r).copied()))?;
+            Some((m.id.clone(), hero.to_owned()))
+        })
+        .collect()
+}
+
+/// Skins GameBanana filed under the general "Skins" category whose hero is
+/// unknown: they need the user to pick one.
+pub fn unassigned_skins<'a>(
+    mods: impl IntoIterator<Item = &'a Mod>,
+    heroes: &BTreeMap<ModId, String>,
+) -> Vec<ModId> {
+    let mut out: Vec<&Mod> = mods
+        .into_iter()
+        .filter(|m| {
+            !heroes.contains_key(&m.id)
+                && m.category
+                    .as_deref()
+                    .is_some_and(|c| c.trim().eq_ignore_ascii_case("skins"))
+        })
+        .collect();
+    out.sort_by_key(|m| m.title.to_lowercase());
+    out.into_iter().map(|m| m.id.clone()).collect()
 }
 
 /// Small xorshift RNG seeded from the clock; good enough for picking skins.
@@ -89,46 +183,67 @@ pub fn hero_entries<'a>(
     mods: impl IntoIterator<Item = &'a Mod>,
     enabled: impl Fn(&ModId) -> bool,
 ) -> Vec<HeroEntry> {
-    let mut by_hero: BTreeMap<String, HeroEntry> = BTreeMap::new();
     let mut list: Vec<&Mod> = mods.into_iter().collect();
-    list.sort_by_key(|m| m.title.to_lowercase());
+    let heroes = resolve_heroes(list.iter().copied());
+    list.sort_by(|a, b| {
+        (a.title.to_lowercase(), a.id.as_str()).cmp(&(b.title.to_lowercase(), b.id.as_str()))
+    });
+    let mut by_hero: BTreeMap<String, HeroEntry> = BTreeMap::new();
     for m in list {
-        let Some(hero) = m.primary_hero() else {
+        let Some(hero) = heroes.get(&m.id) else {
             continue;
         };
         let e = by_hero
             .entry(hero.to_lowercase())
-            .or_insert_with(|| HeroEntry {
-                hero: hero.to_owned(),
-                skins: Vec::new(),
-                others: Vec::new(),
-                active: Vec::new(),
+            .or_insert_with(|| HeroEntry::empty(hero.clone()));
+        // Only files with a hero of their own are skins; a voice pack that
+        // borrows the page's hero is an add-on.
+        if m.primary_hero().is_some() && m.is_skin() {
+            let card = m
+                .remote_id
+                .and_then(|r| e.skins.iter().position(|c| c.page == Some(r)));
+            let i = card.unwrap_or_else(|| {
+                e.skins.push(SkinCard {
+                    page: m.remote_id,
+                    ids: Vec::new(),
+                    on: Vec::new(),
+                });
+                e.skins.len() - 1
             });
-        if m.is_skin() {
-            e.skins.push(m.id.clone());
+            e.skins[i].ids.push(m.id.clone());
             if enabled(&m.id) {
-                e.active.push(m.id.clone());
+                e.skins[i].on.push(m.id.clone());
             }
         } else {
             e.others.push(m.id.clone());
+        }
+    }
+    for e in by_hero.values_mut() {
+        for c in &mut e.skins {
+            c.ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+            c.on.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         }
     }
     by_hero.into_values().collect()
 }
 
 /// Enable/disable sets that give every hero in `entries` with two or more
-/// options a random skin (never the same single active one when avoidable).
+/// skins a random one (never the same single active one when avoidable).
 pub fn shuffle_plan(entries: &[HeroEntry], dice: &mut Dice) -> (Vec<ModId>, Vec<ModId>) {
     let (mut on, mut off) = (Vec::new(), Vec::new());
     for e in entries.iter().filter(|e| e.skins.len() > 1) {
-        let mut pool: Vec<&ModId> = e.skins.iter().collect();
-        if let [only] = e.active.as_slice() {
-            pool.retain(|id| *id != only);
+        let mut pool: Vec<&SkinCard> = e.skins.iter().collect();
+        if let [only] = e.active_cards().as_slice() {
+            pool.retain(|c| c.ids != only.ids);
         }
-        let pick = pool[dice.below(pool.len())].clone();
-        off.extend(e.active.iter().filter(|id| **id != pick).cloned());
-        if !e.active.contains(&pick) {
-            on.push(pick);
+        let pick = pool[dice.below(pool.len())];
+        off.extend(
+            e.active_files()
+                .into_iter()
+                .filter(|id| !pick.ids.contains(id)),
+        );
+        if !pick.is_on() {
+            on.push(pick.primary().clone());
         }
     }
     (on, off)
@@ -146,20 +261,45 @@ impl AppView {
             .find(|e| e.hero.eq_ignore_ascii_case(hero))
     }
 
-    /// Other enabled skins for `id`'s hero (the swap prompt's subject).
+    /// The hero `id` belongs to (see [`resolve_heroes`]).
+    pub fn hero_of(&self, id: &ModId) -> Option<String> {
+        self.heroes_by_mod.get(id).cloned()
+    }
+
+    /// Skins of `id`'s hero that are on, other than `id`'s own skin card
+    /// (the swap prompt's subject). Empty when `id` is not a skin.
     pub fn other_enabled_skins(&self, id: &ModId) -> Vec<ModId> {
-        let Some(m) = self.lib.mods.get(id) else {
+        let Some(e) = self.hero_of(id).and_then(|h| self.hero_entry(&h)) else {
             return Vec::new();
         };
-        if !m.is_skin() {
-            return Vec::new();
-        }
-        let Some(hero) = m.primary_hero() else {
+        let Some(card) = e.card_of(id) else {
             return Vec::new();
         };
-        self.hero_entry(hero)
-            .map(|e| e.active.into_iter().filter(|a| a != id).collect())
-            .unwrap_or_default()
+        e.active_files()
+            .into_iter()
+            .filter(|a| !card.ids.contains(a))
+            .collect()
+    }
+
+    /// Lets the user pick the hero of a mod (skins GameBanana filed under
+    /// the general "Skins" category, or a wrong guess).
+    pub fn set_mod_hero(&mut self, id: ModId, hero: Option<String>, cx: &mut Context<Self>) {
+        self.modal = None;
+        self.run(
+            "hero",
+            "Setting the hero",
+            cx,
+            move |e, _| {
+                e.update_mod(
+                    &id,
+                    kombini_engine::library::ModPatch {
+                        hero_override: Some(hero),
+                        ..Default::default()
+                    },
+                )
+            },
+            |_, _, _| {},
+        );
     }
 
     /// Makes `id` the only active skin of its hero.
@@ -179,7 +319,12 @@ impl AppView {
         let Some(e) = self.hero_entry(&hero) else {
             return;
         };
-        self.apply_enabled(Vec::new(), e.active, format!("{hero}: default look"), cx);
+        self.apply_enabled(
+            Vec::new(),
+            e.active_files(),
+            format!("{hero}: default look"),
+            cx,
+        );
     }
 
     /// Random skin for one hero, or for every hero when `hero` is `None`.
@@ -346,20 +491,21 @@ impl AppView {
                     ),
             )
             .children(entries.iter().enumerate().map(|(i, e)| {
-                let active = e.hero.eq_ignore_ascii_case(&selected);
+                let current = e.hero.eq_ignore_ascii_case(&selected);
                 let hero = e.hero.clone();
-                let sub = match e.active.as_slice() {
+                let active = e.active_cards();
+                let sub = match active.as_slice() {
                     [] if e.skins.is_empty() => format!("{} other mod(s)", e.others.len()),
                     [] => "Default look".to_owned(),
                     [one] => self
                         .lib
                         .mods
-                        .get(one)
+                        .get(one.primary())
                         .map(|m| m.title.clone())
                         .unwrap_or_default(),
                     many => format!("{} skins on", many.len()),
                 };
-                let stacked = e.active.len() > 1;
+                let stacked = active.len() > 1;
                 div()
                     .id(("hero-row", i))
                     .flex()
@@ -369,7 +515,7 @@ impl AppView {
                     .py(px(6.))
                     .rounded(px(6.))
                     .cursor_pointer()
-                    .when(active, |d| d.bg(c(RAISED)))
+                    .when(current, |d| d.bg(c(RAISED)))
                     .hover(|s| s.bg(c(HOVER)))
                     .child(
                         div()
@@ -397,12 +543,7 @@ impl AppView {
             .iter()
             .find(|e| e.hero.eq_ignore_ascii_case(&selected))
             .cloned()
-            .unwrap_or_else(|| HeroEntry {
-                hero: selected.clone(),
-                skins: Vec::new(),
-                others: Vec::new(),
-                active: Vec::new(),
-            });
+            .unwrap_or_else(|| HeroEntry::empty(selected.clone()));
         let detail = self.render_hero_detail(entry, busy, cx);
         div()
             .size_full()
@@ -527,7 +668,7 @@ impl AppView {
             .map(|(i, (name, portrait, entry))| {
                 let skins = entry.as_ref().map_or(0, |e| e.skins.len());
                 let mods = entry.as_ref().map_or(0, |e| e.skins.len() + e.others.len());
-                let active = entry.as_ref().map_or(0, |e| e.active.len());
+                let active = entry.as_ref().map_or(0, |e| e.active_cards().len());
                 let open = name.clone();
                 let initial = name.chars().next().map(String::from).unwrap_or_default();
                 let picture = match portrait {
@@ -630,6 +771,7 @@ impl AppView {
                     .gap(px(gap))
                     .children(tiles),
             )
+            .children(self.render_unassigned(grid_w, cx))
             .into_any_element()
     }
 
@@ -641,16 +783,10 @@ impl AppView {
     ) -> AnyElement {
         let hero = e.hero.clone();
         let hero2 = e.hero.clone();
+        let stacked = e.active_cards().len() > 1;
         let mut skins: Vec<AnyElement> = Vec::new();
-        for (i, id) in e.skins.iter().enumerate() {
-            skins.push(self.render_skin_card(
-                id,
-                i,
-                e.active.contains(id),
-                e.active.len() > 1,
-                busy,
-                cx,
-            ));
+        for (i, card) in e.skins.iter().enumerate() {
+            skins.push(self.render_skin_card(card, i, stacked, busy, cx));
         }
         let others: Vec<AnyElement> = e
             .others
@@ -699,7 +835,7 @@ impl AppView {
                 )
             })
             .collect();
-        let stacked = e.active.len() > 1;
+        let active_files = e.active_files();
         div()
             .w_full()
             .min_w_0()
@@ -721,7 +857,7 @@ impl AppView {
                             .child(heading(e.hero.clone()))
                             .child(muted(match e.skins.len() {
                                 0 => "No skins installed.".to_owned(),
-                                n => format!("{n} skin(s) · {} on", e.active.len()),
+                                n => format!("{n} skin(s) · {} on", e.active_cards().len()),
                             })),
                     )
                     .when(e.skins.len() > 1, |d| {
@@ -743,7 +879,7 @@ impl AppView {
                                 .small()
                                 .text_label("Default look")
                                 .tooltip("Turn off this hero's skins")
-                                .disabled(busy || e.active.is_empty())
+                                .disabled(busy || active_files.is_empty())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.default_look(hero2.clone(), cx)
                                 })),
@@ -781,112 +917,200 @@ impl AppView {
 
     fn render_skin_card(
         &mut self,
-        id: &ModId,
+        card: &SkinCard,
         i: usize,
-        active: bool,
         stacked: bool,
         busy: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let id = card.primary();
+        let active = card.is_on();
         let Some(m) = self.lib.mods.get(id).cloned() else {
             return div().into_any_element();
         };
+        let files = (card.ids.len() > 1)
+            .then(|| format!("{} files · {} on", card.ids.len(), card.on.len()));
         let thumb = m.thumbnail_url.as_ref().and_then(|u| self.thumb(u, cx));
-        let thumb_h = (SKIN_CARD_W * 0.5625).round();
+        let card_h = (SKIN_CARD_W * 0.5625).round() + SKIN_INFO_H;
         let chip_el = self.issue_chip(id);
         let pending = self.is_pending(&format!("toggle:{id}"));
         let use_id = id.clone();
         let show_id = id.clone();
+        picture_card(
+            ("skin-card", i),
+            SKIN_CARD_W,
+            card_h,
+            thumb,
+            if active { ACCENT } else { BORDER },
+        )
+        // Status sits on the picture so every card has the same layout.
+        .children(chip_el.map(|chip| {
+            div()
+                .absolute()
+                .top(px(6.))
+                .left(px(6.))
+                .rounded(px(10.))
+                .bg(ca(WINDOW, 0.85))
+                .child(chip)
+        }))
+        .child(
+            card_info()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .truncate()
+                        .child(m.title.clone()),
+                )
+                .child(
+                    faint(m.author.clone().unwrap_or_else(|| "Unknown author".into())).truncate(),
+                )
+                .children(files.map(faint))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(div().flex_1())
+                        .child(
+                            Button::new(("skin-details", i))
+                                .small()
+                                .ghost()
+                                .text_label("Details")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.selected = Some(show_id.clone());
+                                    this.set_tab(crate::app::Tab::Mods, cx);
+                                })),
+                        )
+                        .child(if active && stacked {
+                            // Several skins are on: this one stays, the rest go off.
+                            Button::new(("skin-keep", i))
+                                .small()
+                                .primary()
+                                .text_label("Keep only this")
+                                .disabled(busy)
+                                .on_click(cx.listener({
+                                    let keep = use_id.clone();
+                                    move |this, _, _, cx| this.use_skin(keep.clone(), cx)
+                                }))
+                                .into_any_element()
+                        } else if active {
+                            chip("Active", ACCENT).into_any_element()
+                        } else {
+                            Button::new(("skin-use", i))
+                                .small()
+                                .primary()
+                                .text_label("Use")
+                                .loading(pending)
+                                .disabled(busy || pending)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.use_skin(use_id.clone(), cx)
+                                }))
+                                .into_any_element()
+                        }),
+                ),
+        )
+        .into_any_element()
+    }
+
+    /// Skins with no known hero (GameBanana's general "Skins" category and
+    /// nothing in the files): each can be given a hero.
+    fn render_unassigned(&mut self, width: f32, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let ids = unassigned_skins(self.lib.mods.values(), &self.heroes_by_mod);
+        if ids.is_empty() {
+            return None;
+        }
+        let rows: Vec<AnyElement> = ids
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let m = self.lib.mods.get(id)?;
+                let pick = id.clone();
+                Some(
+                    card()
+                        .px(px(12.))
+                        .py(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .truncate()
+                                .child(m.title.clone()),
+                        )
+                        .child(
+                            Button::new(("unassigned-hero", i))
+                                .small()
+                                .text_label("Set hero…")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.modal = Some(crate::modal::Modal::PickHero(pick.clone()));
+                                    cx.notify();
+                                })),
+                        )
+                        .into_any_element(),
+                )
+            })
+            .collect();
+        Some(
+            div()
+                .w(px(width))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(section_title(format!("Skins without a hero ({})", rows.len())))
+                .child(muted(
+                    "GameBanana lists these under Skins without a hero, and none was found in their files.",
+                ))
+                .children(rows)
+                .into_any_element(),
+        )
+    }
+
+    /// Body of the hero picker: every hero, plus "No hero".
+    pub fn render_pick_hero(&mut self, id: ModId, cx: &mut Context<Self>) -> AnyElement {
+        let current = self.hero_of(&id);
+        let mut names: Vec<String> = self
+            .roster
+            .as_ref()
+            .map(|r| r.heroes.iter().map(|h| h.name.clone()).collect())
+            .filter(|v: &Vec<String>| !v.is_empty())
+            .unwrap_or_else(|| kombini_core::heroes::HeroTable::builtin().names().to_vec());
+        names.sort_by_key(|n| n.to_lowercase());
+        let clear_id = id.clone();
         div()
-            .id(("skin-card", i))
-            .w(px(SKIN_CARD_W))
             .flex()
             .flex_col()
-            .rounded(px(10.))
-            .overflow_hidden()
-            .bg(c(PANEL))
-            .border_1()
-            .border_color(if active { c(ACCENT) } else { c(BORDER) })
+            .gap(px(12.))
+            .child(div().flex().flex_wrap().gap(px(6.)).children(
+                names.into_iter().enumerate().map(|(i, name)| {
+                    let id = id.clone();
+                    let is = current
+                        .as_deref()
+                        .is_some_and(|c| c.eq_ignore_ascii_case(&name));
+                    let hero = name.clone();
+                    Button::new(("pick-hero", i))
+                        .small()
+                        .when(is, |b| b.primary())
+                        .when(!is, |b| b.outline())
+                        .text_label(name)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_mod_hero(id.clone(), Some(hero.clone()), cx)
+                        }))
+                }),
+            ))
             .child(
-                div()
-                    .relative()
-                    .w(px(SKIN_CARD_W))
-                    .h(px(thumb_h))
-                    .bg(c(RAISED))
-                    .when_some(thumb, |d, path| {
-                        d.child(img(path).size_full().object_fit(ObjectFit::Cover))
-                    })
-                    // Status sits on the picture so every card has the same layout.
-                    .children(chip_el.map(|chip| {
-                        div()
-                            .absolute()
-                            .top(px(6.))
-                            .left(px(6.))
-                            .rounded(px(10.))
-                            .bg(ca(WINDOW, 0.85))
-                            .child(chip)
-                    })),
-            )
-            .child(
-                div()
-                    .p(px(10.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .truncate()
-                            .child(m.title.clone()),
-                    )
-                    .child(
-                        faint(m.author.clone().unwrap_or_else(|| "Unknown author".into()))
-                            .truncate(),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(div().flex_1())
-                            .child(
-                                Button::new(("skin-details", i))
-                                    .small()
-                                    .ghost()
-                                    .text_label("Details")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.selected = Some(show_id.clone());
-                                        this.set_tab(crate::app::Tab::Mods, cx);
-                                    })),
-                            )
-                            .child(if active && stacked {
-                                // Several skins are on: this one stays, the rest go off.
-                                Button::new(("skin-keep", i))
-                                    .small()
-                                    .primary()
-                                    .text_label("Keep only this")
-                                    .disabled(busy)
-                                    .on_click(cx.listener({
-                                        let keep = use_id.clone();
-                                        move |this, _, _, cx| this.use_skin(keep.clone(), cx)
-                                    }))
-                                    .into_any_element()
-                            } else if active {
-                                chip("Active", ACCENT).into_any_element()
-                            } else {
-                                Button::new(("skin-use", i))
-                                    .small()
-                                    .primary()
-                                    .text_label("Use")
-                                    .loading(pending)
-                                    .disabled(busy || pending)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.use_skin(use_id.clone(), cx)
-                                    }))
-                                    .into_any_element()
-                            }),
-                    ),
+                div().flex().justify_end().child(
+                    Button::new("pick-hero-none")
+                        .ghost()
+                        .text_label("Use the detected hero")
+                        .tooltip("Clear your choice")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_mod_hero(clear_id.clone(), None, cx)
+                        })),
+                ),
             )
             .into_any_element()
     }
@@ -907,12 +1131,7 @@ impl AppView {
         };
         let new_title = title(self, &id);
         let old: Vec<String> = others.iter().map(|o| title(self, o)).collect();
-        let hero = self
-            .lib
-            .mods
-            .get(&id)
-            .and_then(|m| m.primary_hero().map(str::to_owned))
-            .unwrap_or_default();
+        let hero = self.hero_of(&id).unwrap_or_default();
         let (swap_id, keep_id) = (id.clone(), id);
         div()
             .flex()
@@ -961,12 +1180,25 @@ impl AppView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Dice, hero_entries, shuffle_plan};
+    use super::{Dice, hero_entries, resolve_heroes, shuffle_plan, unassigned_skins};
     use kombini_core::{Mod, ModId, ModSource};
 
     fn skin(id: &str, hero: &str) -> Mod {
         let mut m = Mod::new(ModId::new(id), id, ModSource::Gamebanana, 0);
         m.category = Some(hero.to_owned());
+        m
+    }
+
+    fn page(id: &str, remote: u64, heroes: &[&str]) -> Mod {
+        let mut m = Mod::new(
+            ModId::new(id),
+            "Aemeath as Apollo",
+            ModSource::Gamebanana,
+            0,
+        );
+        m.category = Some("Skins".into());
+        m.remote_id = Some(remote);
+        m.heroes = heroes.iter().map(|h| (*h).to_owned()).collect();
         m
     }
 
@@ -987,17 +1219,65 @@ mod tests {
         let haze = entries.iter().find(|e| e.hero == "Haze").unwrap();
         assert_eq!(haze.skins.len(), 2);
         assert_eq!(haze.others.len(), 1);
-        assert_eq!(haze.active, vec![ModId::new("a")]);
+        assert_eq!(haze.active_files(), vec![ModId::new("a")]);
+    }
+
+    #[test]
+    fn a_pages_skin_files_are_one_card_and_its_voice_pack_an_add_on() {
+        let mods = [
+            skin("eishin", "Apollo"),
+            page("gb1", 1, &["Apollo"]),
+            page("gb1_2", 1, &["Apollo"]),
+            page("gb1_3", 1, &[]),
+        ];
+        let entries = hero_entries(mods.iter(), |id| id.as_str() == "gb1_2");
+        let apollo = entries.iter().find(|e| e.hero == "Apollo").unwrap();
+        assert_eq!(apollo.skins.len(), 2);
+        let card = apollo.card_of(&ModId::new("gb1")).unwrap();
+        assert_eq!(card.ids, vec![ModId::new("gb1"), ModId::new("gb1_2")]);
+        assert_eq!(card.primary(), &ModId::new("gb1_2"));
+        assert_eq!(apollo.others, vec![ModId::new("gb1_3")]);
+        let heroes = resolve_heroes(mods.iter());
+        assert_eq!(heroes[&ModId::new("gb1_3")], "Apollo");
+    }
+
+    #[test]
+    fn general_skins_without_a_hero_are_unassigned() {
+        let mods = [page("gb9", 9, &[]), skin("a", "Haze")];
+        let heroes = resolve_heroes(mods.iter());
+        assert_eq!(
+            unassigned_skins(mods.iter(), &heroes),
+            vec![ModId::new("gb9")]
+        );
+        let mut picked = page("gb9", 9, &[]);
+        picked.hero_override = Some("Haze".into());
+        let mods = [picked];
+        let heroes = resolve_heroes(mods.iter());
+        assert!(unassigned_skins(mods.iter(), &heroes).is_empty());
+        let entries = hero_entries(mods.iter(), |_| false);
+        assert_eq!(entries[0].skins.len(), 1);
     }
 
     #[test]
     fn shuffle_changes_the_active_skin() {
         let mods = [skin("a", "Haze"), skin("b", "Haze"), skin("c", "Lash")];
         let entries = hero_entries(mods.iter(), |id| id.as_str() == "a");
-        for _ in 0..20 {
-            let (on, off) = shuffle_plan(&entries, &mut Dice::new());
-            assert_eq!(on, vec![ModId::new("b")]);
-            assert_eq!(off, vec![ModId::new("a")]);
-        }
+        let (on, off) = shuffle_plan(&entries, &mut Dice::new());
+        assert_eq!(on, vec![ModId::new("b")]);
+        assert_eq!(off, vec![ModId::new("a")]);
+    }
+
+    #[test]
+    fn shuffle_turns_off_every_file_of_the_old_card() {
+        let mods = [
+            page("gb1", 1, &["Apollo"]),
+            page("gb1_2", 1, &["Apollo"]),
+            skin("eishin", "Apollo"),
+        ];
+        let entries = hero_entries(mods.iter(), |id| id.as_str().starts_with("gb1"));
+        let (on, mut off) = shuffle_plan(&entries, &mut Dice::new());
+        off.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        assert_eq!(on, vec![ModId::new("eishin")]);
+        assert_eq!(off, vec![ModId::new("gb1"), ModId::new("gb1_2")]);
     }
 }

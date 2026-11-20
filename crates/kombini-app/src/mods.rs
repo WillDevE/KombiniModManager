@@ -87,6 +87,7 @@ pub fn filtered_rows(
     outdated: &BTreeSet<ModId>,
 ) -> Vec<ModId> {
     let profile = lib.profile();
+    let heroes = crate::heroes::resolve_heroes(lib.mods.values());
     ordered_ids(lib)
         .into_iter()
         .filter(|id| {
@@ -103,13 +104,14 @@ pub fn filtered_rows(
                 ListFilter::Problems => has_problem(m),
                 ListFilter::Outdated => outdated.contains(id),
             };
-            keep && (needle.is_empty() || matches_needle(m, needle))
+            keep && (needle.is_empty() || matches_needle(m, heroes.get(&m.id), needle))
         })
         .collect()
 }
 
-fn matches_needle(m: &Mod, needle: &str) -> bool {
+fn matches_needle(m: &Mod, hero: Option<&String>, needle: &str) -> bool {
     m.title.to_lowercase().contains(needle)
+        || hero.is_some_and(|h| h.to_lowercase().contains(needle))
         || m.author
             .as_deref()
             .is_some_and(|a| a.to_lowercase().contains(needle))
@@ -638,7 +640,7 @@ impl AppView {
         });
         let problem = has_problem(m);
         let title = m.title.clone();
-        let hero = m.primary_hero().map(str::to_owned);
+        let hero = self.hero_of(&m.id);
         let update = m.update.available;
         let size = format_bytes(m.total_size());
         let variants = m.roots().count();
@@ -969,7 +971,25 @@ impl AppView {
                         } else {
                             chip("Disabled", FAINT)
                         })
-                        .children(m.primary_hero().map(|h| chip(h.to_owned(), MUTED)))
+                        .children(self.hero_of(&id).map(|h| chip(h, MUTED)))
+                        .when(m.is_skin() || self.hero_of(&id).is_none(), |d| {
+                            let pick = id.clone();
+                            d.child(
+                                Button::new("d-set-hero")
+                                    .small()
+                                    .ghost()
+                                    .icon(Lucide::Swords)
+                                    .text_label(if self.hero_of(&id).is_some() {
+                                        "Change hero"
+                                    } else {
+                                        "Set hero"
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.modal = Some(Modal::PickHero(pick.clone()));
+                                        cx.notify();
+                                    })),
+                            )
+                        })
                         .children(m.category.clone().map(|c| chip(c, MUTED)))
                         .when(m.files_state() != FilesState::Ok, |d| {
                             d.child(chip("Files missing", CORAL))

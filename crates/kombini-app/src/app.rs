@@ -152,6 +152,8 @@ pub struct AppView {
     pub other_managers: Vec<String>,
     /// Mods switched on for the game (title-bar toggle, kept after closing).
     pub mods_active: bool,
+    /// Hero of every mod (own, or its GameBanana page's), rebuilt on refresh.
+    pub heroes_by_mod: std::collections::BTreeMap<ModId, String>,
     /// An automatic or manual repair check is running.
     pub repairing: bool,
     /// Last automatic repair check, to throttle focus-triggered checks.
@@ -270,6 +272,7 @@ impl AppView {
             settings: Settings::default(),
             health: None,
             mods_active: true,
+            heroes_by_mod: Default::default(),
             repairing: false,
             last_repair_check: None,
             last_manual_update_check: None,
@@ -467,6 +470,7 @@ impl AppView {
             return;
         };
         self.lib = Arc::new(engine.state());
+        self.heroes_by_mod = crate::heroes::resolve_heroes(self.lib.mods.values());
         self.foreign_count = engine.foreign_files().len();
         self.other_managers = engine.other_managers();
         self.mods_active = engine.mods_active();

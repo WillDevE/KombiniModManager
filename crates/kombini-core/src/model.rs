@@ -384,11 +384,18 @@ impl Mod {
         crate::heroes::HeroTable::builtin().hero_from_name(category)
     }
 
-    /// A hero skin: filed under a hero on GameBanana, or a local/merged mod
-    /// the user assigned to a hero. Other hero mods (sounds, HUD icons)
-    /// are not skins and can be combined freely.
+    /// A hero skin: filed under a hero on GameBanana, filed under the
+    /// general "Skins" category with a hero found in its files, or a
+    /// local/merged mod the user assigned to a hero. Other hero mods
+    /// (sounds, HUD icons) are not skins and can be combined freely.
     pub fn is_skin(&self) -> bool {
-        self.category_hero().is_some() || (self.hero_override.is_some() && self.category.is_none())
+        self.category_hero().is_some()
+            || (self.hero_override.is_some() && self.category.is_none())
+            || (self
+                .category
+                .as_deref()
+                .is_some_and(|c| c.trim().eq_ignore_ascii_case("skins"))
+                && self.primary_hero().is_some())
     }
 
     /// Mounted pak slots `(shard, NN)` of this mod's roots, in file order.

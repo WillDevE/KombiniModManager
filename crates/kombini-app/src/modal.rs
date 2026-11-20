@@ -68,6 +68,8 @@ pub enum Modal {
     Lightbox(Box<crate::gallery::Lightbox>),
     /// Pick which files of a GameBanana page to install.
     Files(Box<crate::page_files::FilePicker>),
+    /// Pick the hero of a mod.
+    PickHero(ModId),
     /// Enabling `id` would stack a second skin on its hero.
     HeroSwap {
         id: ModId,
@@ -98,6 +100,7 @@ impl Modal {
             Modal::Collection(_) => "collection",
             Modal::Lightbox(_) => "lightbox",
             Modal::Files(_) => "files",
+            Modal::PickHero(_) => "pick-hero",
         }
     }
 }
@@ -438,6 +441,16 @@ impl AppView {
             }
             Modal::Activity => ("Activity".into(), 520., self.render_activity()),
             Modal::Lightbox(_) => (self.lightbox_title(), 920., self.render_lightbox(cx)),
+            Modal::PickHero(id) => {
+                let id = id.clone();
+                let title = self
+                    .lib
+                    .mods
+                    .get(&id)
+                    .map(|m| format!("Hero of {}", m.title))
+                    .unwrap_or_else(|| "Choose a hero".into());
+                (title, 560., self.render_pick_hero(id, cx))
+            }
             Modal::Collection(_) => (
                 "Install a collection".into(),
                 600.,

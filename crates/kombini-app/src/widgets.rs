@@ -90,6 +90,62 @@ pub fn choice_chip(
         .child(ctl_text(text))
 }
 
+/// Card whose picture fills it, for mod thumbnails (Discover, Heroes). Add
+/// the text with a [`card_info`] child: it sits on a translucent panel at
+/// the bottom, so any image aspect ratio looks right.
+pub fn picture_card(
+    id: impl Into<ElementId>,
+    w: f32,
+    h: f32,
+    picture: Option<std::path::PathBuf>,
+    border: u32,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .relative()
+        .flex_none()
+        .w(px(w))
+        .h(px(h))
+        .flex()
+        .flex_col()
+        .justify_end()
+        .rounded(px(10.))
+        .overflow_hidden()
+        .bg(c(PANEL))
+        .border_1()
+        .border_color(c(border))
+        .child(match picture {
+            Some(path) => img(path)
+                .absolute()
+                .top_0()
+                .left_0()
+                .w(px(w))
+                .h(px(h))
+                .object_fit(ObjectFit::Cover)
+                .into_any_element(),
+            None => div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .w(px(w))
+                .h(px(h))
+                .bg(c(RAISED))
+                .into_any_element(),
+        })
+}
+
+/// Text panel of a [`picture_card`].
+pub fn card_info() -> Div {
+    div()
+        .p(px(10.))
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .bg(ca(WINDOW, 0.78))
+        .border_t_1()
+        .border_color(ca(TEXT, 0.08))
+}
+
 /// Thin vertical line between groups of toolbar controls.
 pub fn vsep() -> Div {
     div().flex_none().w(px(1.)).h(px(18.)).bg(c(BORDER))

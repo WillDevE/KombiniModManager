@@ -743,105 +743,70 @@ impl AppView {
                 let state = installed.get(&id).copied();
                 let busy = self.is_pending(&format!("gb:{id}"));
                 let outdated = self.date_maybe_outdated(r.updated());
-                let card = div()
-                    .id(("gb-card", id as usize))
-                    .relative()
-                    .w(px(card_w))
-                    .h(px(card_h))
-                    .flex()
-                    .flex_col()
-                    .justify_end()
-                    .rounded(px(10.))
-                    .overflow_hidden()
-                    .bg(c(PANEL))
-                    .border_1()
-                    .border_color(if selected == Some(id) {
-                        c(ACCENT)
-                    } else {
-                        c(BORDER)
-                    })
-                    .cursor_pointer()
-                    .hover(|s| s.border_color(c(FAINT)))
-                    .child(match thumb {
-                        Some(path) => img(path)
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w(px(card_w))
-                            .h(px(card_h))
-                            .object_fit(ObjectFit::Cover)
-                            .into_any_element(),
-                        None => div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w(px(card_w))
-                            .h(px(card_h))
-                            .bg(c(RAISED))
-                            .into_any_element(),
-                    })
-                    .when(outdated, |d| d.child(crate::age::outdated_badge()))
-                    .child(
-                        div()
-                            .p(px(10.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.))
-                            .bg(ca(WINDOW, 0.78))
-                            .border_t_1()
-                            .border_color(ca(TEXT, 0.08))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .truncate()
-                                    .child(r.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .truncate()
-                                            .text_xs()
-                                            .text_color(c(FAINT))
-                                            .child(author),
-                                    )
-                                    .child(faint(format!("♥ {}", format_count(r.likes)))),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .children(
-                                        r.root_category
-                                            .as_ref()
-                                            .map(|c| chip(c.name.clone(), MUTED)),
-                                    )
-                                    .child(div().flex_1())
-                                    .child(match state {
-                                        Some(true) => chip("Update", ACCENT),
-                                        Some(false) => chip("Installed", FAINT),
-                                        None => Button::new(("gb-install", id as usize))
-                                            .small()
-                                            .primary()
-                                            .text_label("Install")
-                                            .loading(busy)
-                                            .disabled(busy)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                cx.stop_propagation();
-                                                this.queue_gamebanana_install(id, None, cx)
-                                            }))
-                                            .into_any_element()
-                                            .into_div(),
-                                    }),
-                            ),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.discover_open(id, false, cx)));
+                let card = picture_card(
+                    ("gb-card", id as usize),
+                    card_w,
+                    card_h,
+                    thumb,
+                    if selected == Some(id) { ACCENT } else { BORDER },
+                )
+                .cursor_pointer()
+                .hover(|s| s.border_color(c(FAINT)))
+                .when(outdated, |d| d.child(crate::age::outdated_badge()))
+                .child(
+                    card_info()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .truncate()
+                                .child(r.name.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(c(FAINT))
+                                        .child(author),
+                                )
+                                .child(faint(format!("♥ {}", format_count(r.likes)))),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .children(
+                                    r.root_category
+                                        .as_ref()
+                                        .map(|c| chip(c.name.clone(), MUTED)),
+                                )
+                                .child(div().flex_1())
+                                .child(match state {
+                                    Some(true) => chip("Update", ACCENT),
+                                    Some(false) => chip("Installed", FAINT),
+                                    None => Button::new(("gb-install", id as usize))
+                                        .small()
+                                        .primary()
+                                        .text_label("Install")
+                                        .loading(busy)
+                                        .disabled(busy)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.queue_gamebanana_install(id, None, cx)
+                                        }))
+                                        .into_any_element()
+                                        .into_div(),
+                                }),
+                        ),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.discover_open(id, false, cx)));
                 // Entrance animation only right after a new result set
                 // arrives; cards scrolled back into view just appear.
                 cards.push(if animate {
