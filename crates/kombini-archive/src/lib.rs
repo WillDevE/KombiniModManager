@@ -8,6 +8,7 @@
 mod detect;
 mod discover;
 mod limits;
+mod pak;
 mod rar;
 mod safety;
 mod sevenz;
@@ -38,6 +39,8 @@ pub enum Backend {
     SystemTar,
     /// A plain file copy (bare VPK).
     Copy,
+    /// The built-in reader for Quake-style `PACK` files.
+    Pak,
 }
 
 /// What an extraction produced.
@@ -175,6 +178,7 @@ fn extract_primary(
         }
         ArchiveKind::Rar => rar::extract_rar(archive, dest, ctx),
         ArchiveKind::Vpk => copy_vpk(archive, dest, ctx).map(|()| (Backend::Copy, vec![])),
+        ArchiveKind::Pak => pak::extract_pak(archive, dest, ctx).map(|()| (Backend::Pak, vec![])),
         ArchiveKind::Unknown => Err(ArchiveError::Unsupported(archive.to_path_buf())),
     }
 }
@@ -208,7 +212,7 @@ fn expand_nested(
         let kind = detect(&path).map_err(|e| io_err(&path, e))?;
         if matches!(
             kind,
-            ArchiveKind::Zip | ArchiveKind::SevenZ | ArchiveKind::Rar
+            ArchiveKind::Zip | ArchiveKind::SevenZ | ArchiveKind::Rar | ArchiveKind::Pak
         ) {
             candidates.push((rel.clone(), kind));
         }

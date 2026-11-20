@@ -23,6 +23,7 @@ pub mod roster;
 pub mod scan;
 pub mod settings;
 pub mod snapshots;
+mod sound_pack;
 pub mod timeline;
 pub mod txn;
 pub mod watch;

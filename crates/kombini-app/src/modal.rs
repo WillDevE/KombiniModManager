@@ -70,6 +70,8 @@ pub enum Modal {
     Files(Box<crate::page_files::FilePicker>),
     /// Pick the hero of a mod.
     PickHero(ModId),
+    /// Turn the files of one skin page on and off.
+    SkinParts(Vec<ModId>),
     /// Enabling `id` would stack a second skin on its hero.
     HeroSwap {
         id: ModId,
@@ -101,6 +103,7 @@ impl Modal {
             Modal::Lightbox(_) => "lightbox",
             Modal::Files(_) => "files",
             Modal::PickHero(_) => "pick-hero",
+            Modal::SkinParts(_) => "skin-parts",
         }
     }
 }
@@ -450,6 +453,15 @@ impl AppView {
                     .map(|m| format!("Hero of {}", m.title))
                     .unwrap_or_else(|| "Choose a hero".into());
                 (title, 560., self.render_pick_hero(id, cx))
+            }
+            Modal::SkinParts(ids) => {
+                let ids = ids.clone();
+                let title = ids
+                    .first()
+                    .and_then(|id| self.lib.mods.get(id))
+                    .map(|m| format!("Parts of {}", m.title))
+                    .unwrap_or_else(|| "Parts".into());
+                (title, 560., self.render_skin_parts(ids, cx))
             }
             Modal::Collection(_) => (
                 "Install a collection".into(),

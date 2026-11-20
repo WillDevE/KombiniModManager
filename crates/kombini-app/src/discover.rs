@@ -1,7 +1,7 @@
 //! Discover: GameBanana browse/search grid, mod detail with file picker,
 //! install queueing and update checks.
 
-use crate::app::{AppView, Tab, Thumb};
+use crate::app::{AppView, Thumb};
 use crate::ops::OpProgress;
 use crate::smooth_scroll::Smooth as _;
 use crate::theme::*;
@@ -599,7 +599,10 @@ impl AppView {
                         std::iter::once((parent_id, "All".to_owned()))
                             .chain(subs.into_iter().map(|c| (Some(c.id), c.name)))
                             .map(|(id, name)| {
-                                segment(format!("subcat-{name}"), name, id == category).on_click(
+                                // A wrapping row has no height to fill.
+                                segment(format!("subcat-{name}"), name, id == category)
+                                    .h(px(26.))
+                                    .on_click(
                                     cx.listener(move |this, _, _, cx| {
                                         this.discover.query.category = id;
                                         this.discover.query.page = 1;
@@ -1095,9 +1098,8 @@ impl AppView {
                                         .small()
                                         .ghost()
                                         .text_label("Show")
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.selected = Some(id.clone());
-                                            this.set_tab(Tab::Mods, cx);
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.show_mod(id.clone(), window, cx);
                                         })),
                                 )
                         })),

@@ -314,6 +314,46 @@ impl Engine {
         }
     }
 
+    /// Installs a voice pack of WAV files: each one named after a game clip
+    /// is converted and packed into a VPK, which is installed as usual.
+    fn install_sound_pack(
+        &self,
+        dir: &Path,
+        meta: InstallMeta,
+        progress: &dyn Progress,
+    ) -> Result<InstallReport> {
+        progress.stage("Converting sounds");
+        let tmp = TempDir::new(self)?;
+        let pack = crate::sound_pack::build_sound_pack(
+            dir,
+            &self.game_pak(),
+            &tmp.0.join("pak01_dir.vpk"),
+            &|| progress.cancelled(),
+        )?;
+        let mut report = self.install_dir(&tmp.0, meta, progress)?;
+        report.warnings.push(format!(
+            "Converted {} WAV file{} into game sounds.",
+            pack.converted,
+            if pack.converted == 1 { "" } else { "s" }
+        ));
+        if !pack.skipped.is_empty() {
+            let shown: Vec<&str> = pack.skipped.iter().take(5).map(String::as_str).collect();
+            let more = pack.skipped.len().saturating_sub(shown.len());
+            report.warnings.push(format!(
+                "Skipped {} WAV file{} not named after a game sound: {}{}",
+                pack.skipped.len(),
+                if pack.skipped.len() == 1 { "" } else { "s" },
+                shown.join(", "),
+                if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                }
+            ));
+        }
+        Ok(report)
+    }
+
     /// Installs every VPK bundle under `dir` as one mod.
     pub fn install_dir(
         &self,
@@ -321,6 +361,9 @@ impl Engine {
         meta: InstallMeta,
         progress: &dyn Progress,
     ) -> Result<InstallReport> {
+        if crate::sound_pack::is_sound_pack(dir) {
+            return self.install_sound_pack(dir, meta, progress);
+        }
         progress.stage("Checking files");
         let staged = stage_dir(dir)?;
         let total: u64 = staged

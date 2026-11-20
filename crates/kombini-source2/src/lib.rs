@@ -7,7 +7,8 @@
 //! decode error type are included; texture, model, material and sound code is
 //! not. Local changes: the error type is trimmed, tests that need the omitted
 //! modules are removed, and lint allowances are added for this workspace.
-//! `sound` and `texture` are Kombini's own `.vsnd_c` and `.vtex_c` readers.
+//! `sound`, `sound_encode` and `texture` are Kombini's own `.vsnd_c` and
+//! `.vtex_c` readers and `.vsnd_c` writer.
 
 #![allow(
     clippy::all,
@@ -21,6 +22,7 @@ mod error;
 pub mod kv3;
 pub mod resource;
 pub mod sound;
+pub mod sound_encode;
 pub mod texture;
 
 pub use error::DecodeError;

@@ -121,6 +121,9 @@ pub struct AppView {
     pub issues: crate::issues::IssuesState,
     /// Ctrl/Shift-click multi-selection in My Mods.
     pub multi: BTreeSet<ModId>,
+    /// Row briefly highlighted after "Show in My Mods", with a token so each
+    /// jump plays its own animation.
+    pub flash: Option<(ModId, u64)>,
     /// When launch options were last auto-saved (drives the "Saved" hint).
     pub launch_saved_at: Option<Instant>,
     /// Row being dragged (dimmed in the list).
@@ -295,6 +298,7 @@ impl AppView {
             filter_input,
             rows: Vec::new(),
             list_scroll: UniformListScrollHandle::new(),
+            flash: None,
             smooth: Default::default(),
             pending: HashSet::new(),
             ops: Vec::new(),
@@ -825,6 +829,42 @@ impl AppView {
         if tab == Tab::Discover && self.discover.page.is_none() && !self.discover.loading {
             self.discover_fetch(cx);
         }
+        cx.notify();
+    }
+
+    /// Opens My Mods on `id`: selected, scrolled into view and briefly
+    /// highlighted. A filter or search that hides it is cleared first.
+    pub fn show_mod(&mut self, id: ModId, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.lib.mods.contains_key(&id) {
+            return;
+        }
+        self.multi.clear();
+        self.selected = Some(id.clone());
+        self.set_tab(Tab::Mods, cx);
+        if !self.rows.contains(&id) {
+            self.list_filter = crate::mods::ListFilter::All;
+            self.filter_input
+                .update(cx, |s, cx| s.set_value("", window, cx));
+            self.recompute_rows(cx);
+        }
+        if let Some(ix) = self.rows.iter().position(|r| r == &id) {
+            self.list_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+        }
+        let token = self.flash.as_ref().map_or(0, |(_, t)| t + 1);
+        self.flash = Some((id, token));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(1600))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.flash.as_ref().is_some_and(|(_, t)| *t == token) {
+                    this.flash = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
         cx.notify();
     }
 

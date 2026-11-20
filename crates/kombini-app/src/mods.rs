@@ -18,6 +18,7 @@ use kombini_core::order::effective_order;
 use kombini_core::{FilesState, FixAction, Level, Mod, ModId};
 use kombini_storage::LibraryState;
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListFilter {
@@ -625,6 +626,11 @@ impl AppView {
         let in_multi = self.multi.contains(&id);
         let issue_chip = self.issue_chip(&id);
         let selected = self.selected.as_ref() == Some(&id) && self.multi.len() <= 1;
+        let flash = self
+            .flash
+            .as_ref()
+            .filter(|(f, _)| f == &id)
+            .map(|(_, t)| *t);
         let favorite = m.favorite;
         let group = profile
             .groups
@@ -878,6 +884,22 @@ impl AppView {
                 .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
                     this.click_row(select_id.clone(), ev.modifiers(), cx);
                 }))
+                .when_some(flash, |d, token| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .bg(ca(ACCENT, 0.30))
+                            .with_animation(
+                                ElementId::NamedInteger("mod-flash".into(), token),
+                                Animation::new(Duration::from_millis(1500))
+                                    .with_easing(ease_in_out),
+                                |el, t| el.opacity(1. - t),
+                            ),
+                    )
+                })
                 .into_any_element(),
         )
     }

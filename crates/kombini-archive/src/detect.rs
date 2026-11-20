@@ -16,6 +16,8 @@ pub enum ArchiveKind {
     Rar,
     /// A bare Valve package file (not an archive container, copied as-is).
     Vpk,
+    /// A Quake-style `PACK` file (some voice packs ship their WAVs this way).
+    Pak,
     /// Anything else.
     Unknown,
 }
@@ -26,7 +28,7 @@ const HEAD_LEN: u64 = 8;
 /// Detects the format of `head`, the first bytes of a file.
 ///
 /// Magic bytes: ZIP `PK\x03\x04` / `PK\x05\x06` / `PK\x07\x08`; 7z `37 7A BC AF 27 1C`;
-/// RAR4 `Rar!\x1A\x07\x00`; RAR5 `Rar!\x1A\x07\x01\x00`; VPK `34 12 AA 55`.
+/// RAR4 `Rar!\x1A\x07\x00`; RAR5 `Rar!\x1A\x07\x01\x00`; VPK `34 12 AA 55`; PAK `PACK`.
 pub fn detect_bytes(head: &[u8]) -> ArchiveKind {
     if head.starts_with(b"PK\x03\x04")
         || head.starts_with(b"PK\x05\x06")
@@ -39,6 +41,8 @@ pub fn detect_bytes(head: &[u8]) -> ArchiveKind {
         ArchiveKind::Rar
     } else if head.starts_with(&[0x34, 0x12, 0xAA, 0x55]) {
         ArchiveKind::Vpk
+    } else if head.starts_with(b"PACK") {
+        ArchiveKind::Pak
     } else {
         ArchiveKind::Unknown
     }

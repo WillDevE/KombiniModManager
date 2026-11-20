@@ -818,9 +818,9 @@ impl AppView {
                                 .small()
                                 .ghost()
                                 .text_label("Details")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.selected = Some(show_id.clone());
-                                    this.set_tab(crate::app::Tab::Mods, cx);
+                                .tooltip("Show in My Mods")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.show_mod(show_id.clone(), window, cx);
                                 })),
                         )
                         .child(
@@ -928,8 +928,24 @@ impl AppView {
         let Some(m) = self.lib.mods.get(id).cloned() else {
             return div().into_any_element();
         };
-        let files = (card.ids.len() > 1)
-            .then(|| format!("{} files · {} on", card.ids.len(), card.on.len()));
+        let parts = (card.ids.len() > 1).then(|| {
+            let ids = card.ids.clone();
+            div()
+                .id(("skin-parts", i))
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .text_xs()
+                .text_color(c(MUTED))
+                .cursor_pointer()
+                .hover(|s| s.text_color(c(TEXT)))
+                .child(format!("{} parts · {} on", card.ids.len(), card.on.len()))
+                .child(Icon::new(IconName::ChevronRight).size(px(12.)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.modal = Some(crate::modal::Modal::SkinParts(ids.clone()));
+                    cx.notify();
+                }))
+        });
         let thumb = m.thumbnail_url.as_ref().and_then(|u| self.thumb(u, cx));
         let card_h = (SKIN_CARD_W * 0.5625).round() + SKIN_INFO_H;
         let chip_el = self.issue_chip(id);
@@ -965,7 +981,7 @@ impl AppView {
                 .child(
                     faint(m.author.clone().unwrap_or_else(|| "Unknown author".into())).truncate(),
                 )
-                .children(files.map(faint))
+                .children(parts)
                 .child(
                     div()
                         .flex()
@@ -977,9 +993,9 @@ impl AppView {
                                 .small()
                                 .ghost()
                                 .text_label("Details")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.selected = Some(show_id.clone());
-                                    this.set_tab(crate::app::Tab::Mods, cx);
+                                .tooltip("Show in My Mods")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.show_mod(show_id.clone(), window, cx);
                                 })),
                         )
                         .child(if active && stacked {
@@ -1111,6 +1127,102 @@ impl AppView {
                             this.set_mod_hero(clear_id.clone(), None, cx)
                         })),
                 ),
+            )
+            .into_any_element()
+    }
+
+    /// The files of one skin page, each with its own switch.
+    pub fn render_skin_parts(&mut self, ids: Vec<ModId>, cx: &mut Context<Self>) -> AnyElement {
+        let busy = self.launch.phase.busy() || self.is_pending("toggle:bulk");
+        let profile = self.lib.profile();
+        let on: Vec<ModId> = ids
+            .iter()
+            .filter(|id| profile.is_enabled(id))
+            .cloned()
+            .collect();
+        let rows: Vec<AnyElement> = ids
+            .iter()
+            .enumerate()
+            .filter_map(|(i, id)| {
+                let m = self.lib.mods.get(id)?;
+                let enabled = on.contains(id);
+                let pending = self.is_pending(&format!("toggle:{id}"));
+                let toggle_id = id.clone();
+                let show_id = id.clone();
+                let label = crate::page_files::file_label(m);
+                Some(
+                    card()
+                        .px(px(12.))
+                        .py(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(div().text_sm().truncate().child(label))
+                                .child(faint(format_bytes(m.total_size()))),
+                        )
+                        .child(
+                            Button::new(("part-show", i))
+                                .small()
+                                .ghost()
+                                .text_label("Details")
+                                .tooltip("Show in My Mods")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.modal = None;
+                                    this.show_mod(show_id.clone(), window, cx);
+                                })),
+                        )
+                        .child(
+                            Switch::new(("part-toggle", i))
+                                .checked(if pending { !enabled } else { enabled })
+                                .disabled(busy || pending)
+                                .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                                    this.set_enabled_now(vec![toggle_id.clone()], *checked, cx);
+                                })),
+                        )
+                        .into_any_element(),
+                )
+            })
+            .collect();
+        let all_on = ids.clone();
+        let all_off = on.clone();
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(muted(
+                "This GameBanana page has more than one file. Turn on the ones you want; \
+                 pages often split a skin from its extras (sounds, effects, alternatives).",
+            ))
+            .child(div().flex().flex_col().gap(px(6.)).children(rows))
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(
+                        Button::new("parts-off")
+                            .ghost()
+                            .text_label("All off")
+                            .disabled(busy || all_off.is_empty())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_enabled_now(all_off.clone(), false, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("parts-on")
+                            .primary()
+                            .text_label("All on")
+                            .disabled(busy || on.len() == ids.len())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_enabled(all_on.clone(), true, cx);
+                            })),
+                    ),
             )
             .into_any_element()
     }
