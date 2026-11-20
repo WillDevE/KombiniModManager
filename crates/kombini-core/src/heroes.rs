@@ -17,6 +17,7 @@ const PATH_HINTS: &[&str] = &[
     "particles/abilities/",
     "soundevents/hero/",
     "sounds/hero",
+    "sounds/vo/",
     "animgraphs/animgraph2/hero/",
 ];
 
@@ -239,8 +240,9 @@ mod tests {
             "panorama/images/heroes/haze_card_psd.vtex_c",
             "materials/generic/bull.vmat_c",
             "sounds/hero/hornet/attack.vsnd_c",
+            "sounds/vo/nano/nano_desperation_power1_01.vsnd_c",
         ]);
-        assert_eq!(heroes, vec!["Billy", "Haze", "Vindicta"]);
+        assert_eq!(heroes, vec!["Billy", "Calico", "Haze", "Vindicta"]);
     }
 
     #[test]

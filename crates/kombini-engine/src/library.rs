@@ -332,6 +332,35 @@ impl Engine {
         Ok(())
     }
 
+    /// Looks again for the heroes of mods that have none, so mods installed
+    /// before a detection rule existed (voice packs) get theirs.
+    pub(crate) fn detect_missing_heroes(&self) {
+        let todo: Vec<(ModId, Vec<BlobHash>)> = self.with_state(|s| {
+            s.mods
+                .values()
+                .filter(|m| m.heroes.is_empty())
+                .map(|m| (m.id.clone(), m.roots().map(|f| f.blob.clone()).collect()))
+                .collect()
+        });
+        for (id, blobs) in todo {
+            let lists: Vec<Arc<Vec<String>>> =
+                blobs.iter().filter_map(|b| self.listing(b)).collect();
+            let heroes = kombini_core::heroes::HeroTable::builtin()
+                .detect(lists.iter().flat_map(|l| l.iter().map(String::as_str)));
+            if heroes.is_empty() {
+                continue;
+            }
+            let _writer = self.writer.lock();
+            let mut state = self.state.write();
+            if let Some(m) = state.mods.get_mut(&id) {
+                m.heroes = heroes;
+                if let Err(e) = self.db.lock().save_mod(self.game_id.as_str(), m) {
+                    tracing::warn!(error = %e, "could not save detected heroes");
+                }
+            }
+        }
+    }
+
     /// Restores missing files from the blob store (a plain re-apply).
     pub fn restore_files(&self, progress: &dyn Progress) -> Result<ChangeReport> {
         self.mutate("restore_files", progress, |_| {

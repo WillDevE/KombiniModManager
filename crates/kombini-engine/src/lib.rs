@@ -231,6 +231,7 @@ impl Engine {
 
         let rescan = engine.rescan()?;
         report.missing_files = rescan.missing_files;
+        engine.detect_missing_heroes();
         report.foreign_files = rescan.foreign_files;
 
         // Game updates overwrite gameinfo.gi; detect and repair.
