@@ -22,6 +22,7 @@ gpui_kit::assets::icon_assets!(
         ShieldAlert,
         Swords,
         Power,
+        PowerOff,
         FolderInput,
         Camera,
         ArrowUpToLine,

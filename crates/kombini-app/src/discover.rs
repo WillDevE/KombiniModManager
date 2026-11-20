@@ -3,6 +3,7 @@
 
 use crate::app::{AppView, Tab, Thumb};
 use crate::ops::OpProgress;
+use crate::smooth_scroll::Smooth as _;
 use crate::theme::*;
 use crate::widgets::*;
 use gpui_kit::component::button::*;
@@ -12,8 +13,7 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Disableable, Icon, IconName, Sizable};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use kombini_core::{AppError, ErrorCode, ModSource};
-use kombini_download::DownloadSpec;
+use kombini_core::{AppError, ModSource};
 use kombini_engine::install::InstallMeta;
 use kombini_engine::{Engine, NoProgress, Progress};
 use kombini_gamebanana::updates::{Installed, find_update};
@@ -162,6 +162,25 @@ pub fn check_updates(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    let owned: std::collections::BTreeSet<(u64, u64)> = engine.with_state(|s| {
+        s.mods
+            .values()
+            .filter_map(|m| Some((m.remote_id?, m.file_id?)))
+            .collect()
+    });
+    let remotes: std::collections::BTreeMap<kombini_core::ModId, u64> = engine.with_state(|s| {
+        s.mods
+            .values()
+            .filter_map(|m| Some((m.id.clone(), m.remote_id?)))
+            .collect()
+    });
+    for (id, candidate) in &mut results {
+        if let (Some(c), Some(remote)) = (candidate.as_ref(), remotes.get(id))
+            && owned.contains(&(*remote, c.file.id))
+        {
+            *candidate = None;
+        }
+    }
     let found = results.iter().filter(|(_, c)| c.is_some()).count();
     engine.mutate("check_updates", &NoProgress, move |s| {
         for (id, candidate) in results {
@@ -400,91 +419,6 @@ impl AppView {
         .detach();
     }
 
-    /// Resolves the file to install and queues the download. With several
-    /// candidate files and no explicit choice, opens the picker instead.
-    pub fn queue_gamebanana_install(
-        &mut self,
-        remote: u64,
-        file_id: Option<u64>,
-        is_update: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let gb = self.gb.clone();
-        let Some(dm) = self.downloads.clone() else {
-            return;
-        };
-        let key = if is_update {
-            self.lib
-                .mods
-                .values()
-                .find(|m| m.remote_id == Some(remote))
-                .map(|m| format!("update:{}", m.id))
-                .unwrap_or_else(|| format!("gb:{remote}"))
-        } else {
-            format!("gb:{remote}")
-        };
-        self.run(
-            key,
-            "Preparing download",
-            cx,
-            move |_, _| {
-                let profile = gb.profile(remote, is_update).map_err(gb_err)?;
-                let file = match file_id {
-                    Some(fid) => profile.file(fid).cloned().ok_or_else(|| {
-                        AppError::new(ErrorCode::InvalidInput, "That file is no longer available")
-                    })?,
-                    None => {
-                        let files: Vec<&GbFile> = profile
-                            .current_files()
-                            .into_iter()
-                            .filter(|f| !f.flagged())
-                            .collect();
-                        match files.as_slice() {
-                            [one] => (*one).clone(),
-                            [] => {
-                                return Err(AppError::new(
-                                    ErrorCode::InvalidInput,
-                                    "This mod has no downloadable files (they may be archived or flagged).",
-                                ));
-                            }
-                            _ => return Ok(None),
-                        }
-                    }
-                };
-                if file.flagged() {
-                    return Err(AppError::new(
-                        ErrorCode::InvalidInput,
-                        "GameBanana's virus scan flagged this file, so it was not downloaded.",
-                    ));
-                }
-                let meta = install_meta(&profile, &file, if is_update { None } else { Some(true) });
-                let spec = DownloadSpec {
-                    id: format!("gb{}-{}-{}", profile.id, file.id, kombini_storage::random_hex(3)),
-                    url: file.url(),
-                    file_name: kombini_download::safe_file_name(&file.file_name),
-                    title: profile.name.clone(),
-                    expected_md5: file.md5.clone(),
-                    expected_size: Some(file.size).filter(|s| *s > 0),
-                    meta: serde_json::to_value(&meta).unwrap_or_default(),
-                };
-                dm.enqueue(spec);
-                Ok(Some(profile.name.clone()))
-            },
-            move |this, queued, cx| match queued {
-                Some(title) => {
-                    this.toast(Notification::info(format!("Downloading {title}…")));
-                }
-                None => {
-                    this.toast(Notification::info(
-                        "This mod has several files. Pick the one you want.",
-                    ));
-                    this.tab = Tab::Discover;
-                    this.discover_open(remote, false, cx);
-                }
-            },
-        );
-    }
-
     pub fn thumb(&mut self, url: &str, cx: &mut Context<Self>) -> Option<std::path::PathBuf> {
         match self.thumbs.get(url) {
             Some(Thumb::Ready(p)) => return Some(p.clone()),
@@ -578,39 +512,34 @@ impl AppView {
                     .child(
                         div()
                             .w(px(320.))
-                            .child(Input::new(&self.discover.input).small().cleanable(true)),
+                            .child(
+                                Input::new(&self.discover.input)
+                                    .h(px(BAR_H))
+                                    .cleanable(true)
+                                    .prefix(
+                                        gpui_kit::component::Icon::new(IconName::Search)
+                                            .size(px(14.))
+                                            .text_color(c(FAINT)),
+                                    ),
+                            ),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(2.))
-                            .children(Sort::ALL.into_iter().map(|s| {
-                                let active = s == sort;
-                                div()
-                                    .id(SharedString::from(format!("sort-{}", s.label())))
-                                    .px(px(10.))
-                                    .py(px(4.))
-                                    .rounded(px(6.))
-                                    .cursor_pointer()
-                                    .text_xs()
-                                    .when(active, |d| d.bg(c(RAISED)).text_color(c(TEXT)))
-                                    .when(!active, |d| d.text_color(c(MUTED)))
-                                    .hover(|st| st.text_color(c(TEXT)))
-                                    .child(s.label())
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.discover.query.sort = s;
-                                        this.discover.query.page = 1;
-                                        this.discover_fetch(cx);
-                                    }))
-                            })),
-                    )
+                    .child(segments().children(Sort::ALL.into_iter().map(|s| {
+                        segment(format!("sort-{}", s.label()), s.label(), s == sort).on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.discover.query.sort = s;
+                                this.discover.query.page = 1;
+                                this.discover_fetch(cx);
+                            }),
+                        )
+                    })))
                     .child(div().flex_1())
                     .child(
                         Button::new("add-from-link")
                             .small()
                             .ghost()
+                            .h(px(BAR_H))
                             .icon(crate::icons::Lucide::Link)
-                            .label("Add from link")
+                            .text_label("Add from link")
                             .tooltip("Install a GameBanana mod or collection, or a share code")
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_prompt(
@@ -633,26 +562,14 @@ impl AppView {
                             })),
                     )
                     .child(
-                        div()
-                            .id("hide-outdated")
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .px(px(10.))
-                            .py(px(4.))
-                            .rounded(px(6.))
-                            .cursor_pointer()
-                            .text_xs()
-                            .when(hide_outdated, |d| {
-                                d.bg(ca(AMBER, 0.14)).text_color(c(AMBER))
-                            })
-                            .when(!hide_outdated, |d| d.text_color(c(MUTED)))
-                            .hover(|s| s.text_color(c(TEXT)))
-                            .child(if hide_outdated {
-                                "✓ Hide may be outdated"
-                            } else {
-                                "Hide may be outdated"
-                            })
+                        Button::new("hide-outdated")
+                            .small()
+                            .ghost()
+                            .h(px(BAR_H))
+                            .icon(if hide_outdated { IconName::Check } else { IconName::EyeOff })
+                            .when(hide_outdated, |b| gpui_kit::component::Selectable::selected(b, true))
+                            .text_label("Hide may be outdated")
+                            .tooltip("Hide mods flagged as possibly broken by a game update")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.discover.hide_outdated = !this.discover.hide_outdated;
                                 cx.notify();
@@ -668,48 +585,27 @@ impl AppView {
                     .flex_wrap()
                     .gap(px(6.))
                     .children(cats.into_iter().map(|(id, name)| {
-                        let active = id == parent;
-                        div()
-                            .id(SharedString::from(format!("cat-{name}")))
-                            .px(px(10.))
-                            .py(px(3.))
-                            .rounded(px(999.))
-                            .border_1()
-                            .cursor_pointer()
-                            .text_xs()
-                            .border_color(if active { c(ACCENT) } else { c(BORDER) })
-                            .text_color(if active { c(ACCENT) } else { c(MUTED) })
-                            .hover(|s| s.text_color(c(TEXT)))
-                            .child(name)
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                        choice_chip(format!("cat-{name}"), name, id == parent).on_click(
+                            cx.listener(move |this, _, _, cx| {
                                 this.discover_pick_parent(id, cx);
-                            }))
+                            }),
+                        )
                     })),
             )
             .when(!subs.is_empty(), |d| {
                 let parent_id = parent;
                 d.child(
-                    div().flex().flex_wrap().gap(px(4.)).children(
+                    div().flex().flex_wrap().gap(px(2.)).children(
                         std::iter::once((parent_id, "All".to_owned()))
                             .chain(subs.into_iter().map(|c| (Some(c.id), c.name)))
                             .map(|(id, name)| {
-                                let active = id == category;
-                                div()
-                                    .id(SharedString::from(format!("subcat-{name}")))
-                                    .px(px(8.))
-                                    .py(px(2.))
-                                    .rounded(px(6.))
-                                    .cursor_pointer()
-                                    .text_xs()
-                                    .when(active, |d| d.bg(c(RAISED)).text_color(c(TEXT)))
-                                    .when(!active, |d| d.text_color(c(MUTED)))
-                                    .hover(|s| s.text_color(c(TEXT)))
-                                    .child(name)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                segment(format!("subcat-{name}"), name, id == category).on_click(
+                                    cx.listener(move |this, _, _, cx| {
                                         this.discover.query.category = id;
                                         this.discover.query.page = 1;
                                         this.discover_fetch(cx);
-                                    }))
+                                    }),
+                                )
                             }),
                     ),
                 )
@@ -739,7 +635,7 @@ impl AppView {
                 .child(
                     Button::new("discover-retry")
                         .primary()
-                        .label("Retry")
+                        .text_label("Retry")
                         .on_click(cx.listener(|this, _, _, cx| this.discover_fetch(cx))),
                 )
                 .into_any_element();
@@ -933,12 +829,12 @@ impl AppView {
                                         None => Button::new(("gb-install", id as usize))
                                             .small()
                                             .primary()
-                                            .label("Install")
+                                            .text_label("Install")
                                             .loading(busy)
                                             .disabled(busy)
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 cx.stop_propagation();
-                                                this.queue_gamebanana_install(id, None, false, cx)
+                                                this.queue_gamebanana_install(id, None, cx)
                                             }))
                                             .into_any_element()
                                             .into_div(),
@@ -988,7 +884,7 @@ impl AppView {
                 .child(
                     Button::new("discover-more-retry")
                         .small()
-                        .label("Retry")
+                        .text_label("Retry")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.discover.more_error = None;
                             this.discover_load_more(cx);
@@ -1016,8 +912,8 @@ impl AppView {
             .min_h_0()
             // Old results stay put (dimmed) until the new ones arrive.
             .when(self.discover.loading, |d| d.opacity(0.5))
-            .track_scroll(&scroll)
             .overflow_y_scroll()
+            .smooth(&self.smooth.for_handle("discover", &scroll), cx)
             // Re-render while scrolling so rows and paging follow the view.
             .on_scroll(cx.listener(|_, _, _, cx| cx.notify()))
             .px(px(16.))
@@ -1095,7 +991,7 @@ impl AppView {
                         .cursor_pointer()
                         .hover(|s| s.bg(c(PANEL)).border_color(c(TEXT)))
                         .child(Icon::new(IconName::ArrowUp).size_4().text_color(c(ACCENT)))
-                        .child("Back to top")
+                        .child(ctl_text("Back to top"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             cx.stop_propagation();
                             this.discover.scroll.set_offset(point(px(0.), px(0.)));
@@ -1113,6 +1009,7 @@ impl AppView {
             .flex_none()
             .h_full()
             .overflow_y_scroll()
+            .smooth(&self.smooth.get("discover-detail"), cx)
             .border_l_1()
             .border_color(c(BORDER))
             .bg(c(PANEL))
@@ -1155,9 +1052,12 @@ impl AppView {
                 .child(div().flex().justify_end().child(close))
                 .child(muted(err))
                 .child(
-                    Button::new("gb-retry").small().label("Retry").on_click(
-                        cx.listener(move |this, _, _, cx| this.discover_open(id, true, cx)),
-                    ),
+                    Button::new("gb-retry")
+                        .small()
+                        .text_label("Retry")
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.discover_open(id, true, cx)),
+                        ),
                 )
                 .into_any_element();
         }
@@ -1165,13 +1065,9 @@ impl AppView {
             return shell.child(close).into_any_element();
         };
         let gallery = self.render_gallery(&p, cx);
-        let installed = self
-            .lib
-            .mods
-            .values()
-            .find(|m| m.remote_id == Some(p.id))
-            .cloned();
-        let files: Vec<GbFile> = p.current_files().into_iter().cloned().collect();
+        let installed = self.page_mods(p.id);
+        let enabled = self.lib.profile().enabled.clone();
+        let files: Vec<GbFile> = crate::page_files::installable(&p);
         let archived = p.archived_files.len();
         let desc: String = p.description_text().chars().take(1500).collect();
         let requirements = p.requirements();
@@ -1201,101 +1097,118 @@ impl AppView {
                 .join(" · "),
             ))
             .children(self.discover_age_note(p.updated()))
-            .when_some(installed.clone(), |d, m| {
+            .when(!installed.is_empty(), |d| {
                 d.child(
                     div()
                         .flex()
-                        .items_center()
-                        .gap(px(8.))
+                        .flex_col()
+                        .gap(px(4.))
                         .p(px(10.))
                         .rounded(px(RADIUS))
                         .bg(ca(ACCENT, 0.10))
-                        .child(dot(ACCENT))
-                        .child(div().flex_1().text_sm().child(format!(
-                            "Installed{}",
-                            m.variant_desc.map(|v| format!(" ({v})")).unwrap_or_default()
-                        )))
-                        .child({
+                        .children(installed.iter().enumerate().map(|(i, m)| {
+                            let on = enabled.contains(&m.id);
                             let id = m.id.clone();
-                            Button::new("gb-show-installed")
-                                .xsmall()
-                                .ghost()
-                                .label("Show")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.selected = Some(id.clone());
-                                    this.set_tab(Tab::Mods, cx);
-                                }))
-                        }),
-                )
-            })
-            .child(section_title(format!("Files ({})", files.len())))
-            .children(files.into_iter().map(|f| {
-                let fid = f.id;
-                let flagged = f.flagged();
-                let busy = self.is_pending(&format!("gb:{remote}"));
-                let is_current = installed.as_ref().is_some_and(|m| m.file_id == Some(fid));
-                card()
-                    .p(px(10.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(div().flex_1().min_w_0().text_sm().truncate().child(f.file_name.clone()))
-                            .child(faint(format_bytes(f.size))),
-                    )
-                    .children(
-                        f.description
-                            .clone()
-                            .filter(|d| !d.trim().is_empty())
-                            .map(muted),
-                    )
-                    // Status chips on their own line so the button always fits.
-                    .when(self.date_maybe_outdated(f.date_added) || flagged, |d| {
-                        d.child(
                             div()
                                 .flex()
-                                .flex_wrap()
-                                .gap(px(6.))
-                                .when(self.date_maybe_outdated(f.date_added), |d| {
-                                    d.child(chip("May be outdated", MUTED))
-                                })
-                                .when(flagged, |d| d.child(chip("Flagged by virus scan", CORAL))),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(
-                                div().flex_1().min_w_0().child(faint(format!(
-                                    "{} downloads{}",
-                                    format_count(f.download_count),
-                                    f.date_added
-                                        .map(|t| format!(" · uploaded {}", kombini_core::freshness::format_date(t)))
-                                        .unwrap_or_default()
-                                ))),
-                            )
-                            .when(!flagged, |d| {
-                                d.child(
-                                    Button::new(("gb-file", fid as usize))
+                                .items_center()
+                                .gap(px(8.))
+                                .child(dot(if on { ACCENT } else { FAINT }))
+                                .child(div().flex_1().min_w_0().text_sm().truncate().child(
+                                    if installed.len() > 1 || files.len() > 1 {
+                                        format!(
+                                            "Installed: {}{}",
+                                            crate::page_files::file_label(m),
+                                            if on { "" } else { " (off)" }
+                                        )
+                                    } else {
+                                        format!("Installed{}", if on { "" } else { " (off)" })
+                                    },
+                                ))
+                                .child(
+                                    Button::new(("gb-show-installed", i))
                                         .small()
-                                        .primary()
-                                        .label(if is_current { "Reinstall" } else if installed.is_some() { "Switch to this" } else { "Install" })
-                                        .loading(busy)
-                                        .disabled(busy)
+                                        .ghost()
+                                        .text_label("Show")
                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.queue_gamebanana_install(remote, Some(fid), installed_flag(this, remote), cx)
+                                            this.selected = Some(id.clone());
+                                            this.set_tab(Tab::Mods, cx);
                                         })),
                                 )
+                        })),
+                )
+            })
+            .child({
+                let busy = self.is_pending(&format!("gb:{remote}"));
+                let usable = files.iter().filter(|f| !f.flagged()).count();
+                let single = files.len() == 1 && usable == 1;
+                let only = files.first().map(|f| f.id);
+                let have_all = !installed.is_empty()
+                    && files
+                        .iter()
+                        .all(|f| installed.iter().any(|m| m.file_id == Some(f.id)));
+                let label = if single {
+                    if have_all { "Reinstall".to_owned() } else { "Install".to_owned() }
+                } else if installed.is_empty() {
+                    format!("Install ({} options)", files.len())
+                } else {
+                    format!("Install other files ({} options)", files.len())
+                };
+                let profile = p.clone();
+                Button::new("gb-install-main")
+                    .primary()
+                    .w_full()
+                    .icon(IconName::ArrowDown)
+                    .text_label(label)
+                    .loading(busy)
+                    .disabled(busy || usable == 0)
+                    .on_click(cx.listener(move |this, _, _, cx| match (single, only) {
+                        (true, Some(fid)) => {
+                            let switch = this.settings.switch_variants;
+                            this.queue_gamebanana_files(remote, vec![fid], switch, cx)
+                        }
+                        _ => this.open_file_picker(remote, Some(profile.clone()), cx),
+                    }))
+            })
+            .when(files.len() > 1, |d| {
+                d.child(section_title(format!("Files ({})", files.len())))
+                    .child(
+                        card().px(px(4.)).py(px(4.)).flex().flex_col().children(
+                            files.iter().map(|f| {
+                                let have = installed.iter().find(|m| m.file_id == Some(f.id));
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .px(px(8.))
+                                    .py(px(5.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .flex_col()
+                                            .child(div().text_sm().truncate().child(f.file_name.clone()))
+                                            .children(
+                                                f.description
+                                                    .clone()
+                                                    .filter(|d| !d.trim().is_empty())
+                                                    .map(|d| div().text_xs().text_color(c(MUTED)).truncate().child(d)),
+                                            ),
+                                    )
+                                    .when(f.flagged(), |d| d.child(chip("Flagged", CORAL)))
+                                    .when_some(have, |d, m| {
+                                        d.child(chip(
+                                            "Installed",
+                                            if enabled.contains(&m.id) { ACCENT } else { MUTED },
+                                        ))
+                                    })
+                                    .child(faint(format_bytes(f.size)))
                             }),
+                        ),
                     )
-            }))
-            .when(archived > 0, |d| {
+            })
+            .when(archived > 0 && !files.iter().any(|f| f.archived), |d| {
                 d.child(faint(format!(
                     "{archived} older archived file(s) are hidden; they are never installed automatically."
                 )))
@@ -1314,10 +1227,10 @@ impl AppView {
                         .when_some(r.submission_id.filter(|_| !have), |d, sid| {
                             d.child(
                                 Button::new(("gb-req", sid as usize))
-                                    .xsmall()
-                                    .label("Install")
+                                    .small()
+                                    .text_label("Install")
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.queue_gamebanana_install(sid, None, false, cx)
+                                        this.queue_gamebanana_install(sid, None, cx)
                                     })),
                             )
                         })
@@ -1332,16 +1245,12 @@ impl AppView {
                     Button::new("gb-open")
                         .small()
                         .ghost()
-                        .label("Open on GameBanana")
+                        .text_label("Open on GameBanana")
                         .on_click(move |_, _, cx| cx.open_url(&url)),
                 )
             })
             .into_any_element()
     }
-}
-
-fn installed_flag(this: &AppView, remote: u64) -> bool {
-    this.lib.mods.values().any(|m| m.remote_id == Some(remote))
 }
 
 trait IntoDiv {

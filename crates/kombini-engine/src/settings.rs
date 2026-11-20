@@ -30,6 +30,9 @@ pub struct Settings {
     pub hero_swap_prompt: bool,
     /// Give every hero with two or more skins a random one on Launch Modded.
     pub shuffle_on_launch: bool,
+    /// Installing another file from a mod's page turns off the files of
+    /// that page you already have (switch variants instead of stacking).
+    pub switch_variants: bool,
 }
 
 impl Default for Settings {
@@ -52,6 +55,7 @@ impl Default for Settings {
             hide_nsfw: true,
             hero_swap_prompt: true,
             shuffle_on_launch: false,
+            switch_variants: true,
         }
     }
 }

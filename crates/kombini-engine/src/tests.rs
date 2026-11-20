@@ -119,6 +119,41 @@ fn game_running_blocks_changes() {
 }
 
 #[test]
+fn repair_if_needed_puts_back_files_and_gameinfo_only_when_needed() {
+    let f = Fixture::new();
+    let e = f.open();
+    let id = install(&f, &e, "m", &[("a/b.txt", "x")]);
+    e.set_enabled(std::slice::from_ref(&id), true).unwrap();
+    assert!(e.repair_if_needed(&NoProgress).unwrap().is_none());
+
+    std::fs::remove_file(f.addons(1).join("pak01_dir.vpk")).unwrap();
+    e.unpatch_gameinfo().unwrap();
+    assert!(!f.gameinfo().contains("Kombini Mod Manager"));
+    let fixed = e.repair_if_needed(&NoProgress).unwrap().expect("repaired");
+    assert!(fixed.placed >= 1 && fixed.gameinfo_changed);
+    assert_eq!(f.listing(1), vec!["pak01_dir.vpk"]);
+    assert!(f.gameinfo().contains("Kombini Mod Manager"));
+    assert!(e.repair_if_needed(&NoProgress).unwrap().is_none());
+
+    // Mods switched off: nothing is put back.
+    e.set_mods_active(false).unwrap();
+    assert!(!e.needs_repair());
+    assert!(e.repair_if_needed(&NoProgress).unwrap().is_none());
+    assert!(!f.gameinfo().contains("Kombini Mod Manager"));
+}
+
+#[test]
+fn last_update_check_is_remembered() {
+    let f = Fixture::new();
+    {
+        let e = f.open();
+        assert_eq!(e.last_update_check(), None);
+        e.set_last_update_check(1234).unwrap();
+    }
+    assert_eq!(f.open().last_update_check(), Some(1234));
+}
+
+#[test]
 fn missing_files_are_detected_and_restored() {
     let f = Fixture::new();
     let e = f.open();
@@ -443,6 +478,47 @@ fn vanilla_launch_bookkeeping_reapplies_on_reopen() {
 }
 
 #[test]
+fn mods_switched_off_stay_off_across_changes_and_reopen() {
+    let f = Fixture::new();
+    {
+        let e = f.open();
+        assert!(e.mods_active());
+        let id = install(&f, &e, "m", &[("a/b.txt", "x")]);
+        e.set_enabled(std::slice::from_ref(&id), true).unwrap();
+        assert!(f.gameinfo().contains("Kombini Mod Manager"));
+
+        e.set_mods_active(false).unwrap();
+        assert!(!e.mods_active());
+        assert!(!f.gameinfo().contains("Kombini Mod Manager"));
+        // The mod stays installed and enabled.
+        assert!(e.with_state(|s| s.profile().enabled.contains(&id)));
+        // Changes while off never patch gameinfo back in.
+        let other = install(&f, &e, "n", &[("c/d.txt", "y")]);
+        e.set_enabled(std::slice::from_ref(&other), true).unwrap();
+        assert!(!f.gameinfo().contains("Kombini Mod Manager"));
+        e.ensure_gameinfo().unwrap();
+        assert!(!f.gameinfo().contains("Kombini Mod Manager"));
+        assert!(
+            e.health()
+                .issues
+                .iter()
+                .all(|i| !i.code.starts_with("gameinfo"))
+        );
+    }
+    // Still off after closing and reopening.
+    {
+        let e = f.open();
+        assert!(!e.mods_active());
+        assert!(!f.gameinfo().contains("Kombini Mod Manager"));
+        e.set_mods_active(true).unwrap();
+        assert!(f.gameinfo().contains("Kombini Mod Manager"));
+    }
+    let e = f.open();
+    assert!(e.mods_active());
+    assert!(f.gameinfo().contains("Kombini Mod Manager"));
+}
+
+#[test]
 fn adopting_a_foreign_file_takes_its_slot() {
     let f = Fixture::new();
     let foreign_vpk = make_vpk(&f.addons(1).join("pak01_dir.vpk"), &[("adopt/me.txt", "x")]);
@@ -730,4 +806,87 @@ fn update_keeps_previous_version_and_rolls_back() {
         first
     );
     assert!(e.keep_version_as_mod(&id, 0).is_err());
+}
+
+fn page_file(f: &Fixture, e: &crate::Engine, file_id: u64, m: &mut InstallMeta) -> ModId {
+    m.remote_id = Some(40);
+    m.file_id = Some(file_id);
+    let vpk = make_vpk(
+        &f.scratch(&format!("p{file_id}")).join("pak01_dir.vpk"),
+        &[(&format!("f{file_id}.txt") as &str, "x")],
+    );
+    e.install_paths(&[vpk], m.clone(), &NoProgress)
+        .unwrap()
+        .mod_id
+}
+
+#[test]
+fn files_of_one_page_install_as_separate_mods_next_to_each_other() {
+    let f = Fixture::new();
+    let e = f.open();
+    let other = install(&f, &e, "other", &[("o.txt", "o")]);
+    let mut m = meta("Page");
+    m.enable = Some(true);
+    let main = page_file(&f, &e, 1, &mut m);
+    assert_eq!(main.as_str(), "gb40");
+    let unrelated = install(&f, &e, "later", &[("l.txt", "l")]);
+    // Stacking: the addon goes on above the main file, both stay on.
+    let addon = page_file(&f, &e, 2, &mut m);
+    assert_eq!(addon.as_str(), "gb40_2");
+    e.with_state(|s| {
+        let p = s.profile();
+        assert!(p.enabled.contains(&main) && p.enabled.contains(&addon));
+        let at = |id: &ModId| p.order.iter().position(|o| o == id).unwrap();
+        assert_eq!(at(&addon) + 1, at(&main));
+        assert!(at(&other) < at(&addon) && at(&main) < at(&unrelated));
+    });
+    // Reinstalling a file goes back into its own mod.
+    assert_eq!(page_file(&f, &e, 2, &mut m), addon);
+    assert_eq!(e.with_state(|s| s.mods.len()), 4);
+    // Switching: a third file turns the others off.
+    m.disable_siblings = true;
+    let alt = e
+        .install_paths(
+            &[make_vpk(
+                &f.scratch("p3").join("pak01_dir.vpk"),
+                &[("f3.txt", "x")],
+            )],
+            InstallMeta {
+                remote_id: Some(40),
+                file_id: Some(3),
+                ..m.clone()
+            },
+            &NoProgress,
+        )
+        .unwrap();
+    assert_eq!(alt.disabled_siblings.len(), 2);
+    e.with_state(|s| {
+        let p = s.profile();
+        assert!(p.enabled.contains(&alt.mod_id));
+        assert!(!p.enabled.contains(&main) && !p.enabled.contains(&addon));
+    });
+}
+
+#[test]
+fn a_batch_from_one_page_keeps_its_order_and_stays_on_together() {
+    let f = Fixture::new();
+    let e = f.open();
+    let mut m = meta("Page");
+    m.enable = Some(true);
+    m.disable_siblings = true;
+    // Highest priority first: 3, then 1, then 2. They finish out of order.
+    m.order_hint = vec![3, 1, 2];
+    let two = page_file(&f, &e, 2, &mut m);
+    let three = page_file(&f, &e, 3, &mut m);
+    let one = page_file(&f, &e, 1, &mut m);
+    e.with_state(|s| {
+        let p = s.profile();
+        let order: Vec<&ModId> = p.order.iter().collect();
+        assert_eq!(order, vec![&three, &one, &two]);
+        assert!(
+            [&one, &two, &three]
+                .iter()
+                .all(|id| p.enabled.contains(*id))
+        );
+    });
 }

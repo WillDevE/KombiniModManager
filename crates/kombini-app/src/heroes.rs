@@ -7,6 +7,7 @@
 
 use crate::app::AppView;
 use crate::icons::Lucide;
+use crate::smooth_scroll::Smooth as _;
 use crate::theme::*;
 use crate::widgets::*;
 use gpui_kit::component::button::*;
@@ -300,6 +301,7 @@ impl AppView {
             .flex_none()
             .h_full()
             .overflow_y_scroll()
+            .smooth(&self.smooth.get("hero-list"), cx)
             .border_r_1()
             .border_color(c(BORDER))
             .bg(c(PANEL))
@@ -317,10 +319,10 @@ impl AppView {
                     .when(have_roster, |d| {
                         d.child(
                             Button::new("all-heroes")
-                                .xsmall()
+                                .small()
                                 .ghost()
                                 .icon(IconName::ChevronLeft)
-                                .label("All heroes")
+                                .text_label("All heroes")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.locker_hero = None;
                                     cx.notify();
@@ -334,10 +336,10 @@ impl AppView {
                     )
                     .child(
                         Button::new("shuffle-all")
-                            .xsmall()
+                            .small()
                             .ghost()
                             .icon(Lucide::Shuffle)
-                            .label("Shuffle all")
+                            .text_label("Shuffle all")
                             .tooltip("A random skin for every hero with two or more")
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, _, cx| this.shuffle_skins(None, cx))),
@@ -413,6 +415,7 @@ impl AppView {
                     .min_w_0()
                     .h_full()
                     .overflow_y_scroll()
+                    .smooth(&self.smooth.get("hero-detail"), cx)
                     .p(px(16.))
                     .child(detail),
             )
@@ -483,7 +486,7 @@ impl AppView {
                     .small()
                     .ghost()
                     .icon(Lucide::Shuffle)
-                    .label("Shuffle all")
+                    .text_label("Shuffle all")
                     .tooltip("A random skin for every hero with two or more")
                     .disabled(busy)
                     .on_click(cx.listener(|this, _, _, cx| this.shuffle_skins(None, cx))),
@@ -608,6 +611,7 @@ impl AppView {
             .id("hero-grid")
             .size_full()
             .overflow_y_scroll()
+            .smooth(&self.smooth.get("hero-grid"), cx)
             .p(px(GRID_PAD))
             .flex()
             .flex_col()
@@ -675,9 +679,9 @@ impl AppView {
                         )
                         .child(
                             Button::new(("hero-other-show", i))
-                                .xsmall()
+                                .small()
                                 .ghost()
-                                .label("Details")
+                                .text_label("Details")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.selected = Some(show_id.clone());
                                     this.set_tab(crate::app::Tab::Mods, cx);
@@ -726,7 +730,7 @@ impl AppView {
                                 .small()
                                 .ghost()
                                 .icon(Lucide::Shuffle)
-                                .label("Shuffle")
+                                .text_label("Shuffle")
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.shuffle_skins(Some(hero.clone()), cx)
@@ -737,7 +741,7 @@ impl AppView {
                         d.child(
                             Button::new("default-look")
                                 .small()
-                                .label("Default look")
+                                .text_label("Default look")
                                 .tooltip("Turn off this hero's skins")
                                 .disabled(busy || e.active.is_empty())
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -848,9 +852,9 @@ impl AppView {
                             .child(div().flex_1())
                             .child(
                                 Button::new(("skin-details", i))
-                                    .xsmall()
+                                    .small()
                                     .ghost()
-                                    .label("Details")
+                                    .text_label("Details")
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.selected = Some(show_id.clone());
                                         this.set_tab(crate::app::Tab::Mods, cx);
@@ -861,7 +865,7 @@ impl AppView {
                                 Button::new(("skin-keep", i))
                                     .small()
                                     .primary()
-                                    .label("Keep only this")
+                                    .text_label("Keep only this")
                                     .disabled(busy)
                                     .on_click(cx.listener({
                                         let keep = use_id.clone();
@@ -874,7 +878,7 @@ impl AppView {
                                 Button::new(("skin-use", i))
                                     .small()
                                     .primary()
-                                    .label("Use")
+                                    .text_label("Use")
                                     .loading(pending)
                                     .disabled(busy || pending)
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -927,7 +931,7 @@ impl AppView {
                     .child(
                         Button::new("swap-cancel")
                             .ghost()
-                            .label("Cancel")
+                            .text_label("Cancel")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.modal = None;
                                 cx.notify();
@@ -935,7 +939,7 @@ impl AppView {
                     )
                     .child(
                         Button::new("swap-keep")
-                            .label("Keep both")
+                            .text_label("Keep both")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.modal = None;
                                 this.set_enabled_now(vec![keep_id.clone()], true, cx);
@@ -944,7 +948,7 @@ impl AppView {
                     .child(
                         Button::new("swap-ok")
                             .primary()
-                            .label(format!("Swap to {new_title}"))
+                            .text_label(format!("Swap to {new_title}"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.modal = None;
                                 this.use_skin(swap_id.clone(), cx);

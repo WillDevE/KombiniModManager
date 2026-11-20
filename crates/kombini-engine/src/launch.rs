@@ -13,6 +13,10 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 pub const VANILLA_PENDING_KEY: &str = "vanilla_pending_reapply";
+/// Whether mods are switched on for the game (the title-bar toggle). Off
+/// keeps every mod installed but takes Kombini's block out of gameinfo.gi,
+/// so the game starts vanilla until it is switched back on.
+pub const MODS_ACTIVE_KEY: &str = "mods_active";
 /// Sessions shorter than this are reported as "short" (possible crash on load).
 pub const SHORT_SESSION_SECS: i64 = 60;
 
@@ -194,6 +198,10 @@ impl Engine {
                     self.ensure_gameinfo()?;
                 }
             }
+            LaunchMode::Vanilla if !self.mods_active() => {
+                // Mods are switched off: gameinfo is already vanilla.
+                self.unpatch_gameinfo()?;
+            }
             LaunchMode::Vanilla => {
                 self.db.lock().set_setting(VANILLA_PENDING_KEY, &true)?;
                 if let Err(e) = self.unpatch_gameinfo() {
@@ -242,6 +250,48 @@ impl Engine {
             None,
         );
         Ok(ticket)
+    }
+
+    /// True unless the user switched mods off.
+    pub fn mods_active(&self) -> bool {
+        self.db
+            .lock()
+            .get_setting::<bool>(MODS_ACTIVE_KEY)
+            .ok()
+            .flatten()
+            .unwrap_or(true)
+    }
+
+    /// Switches mods on or off for the game. Installed and enabled mods stay
+    /// as they are; only gameinfo.gi changes, and it stays that way after
+    /// Kombini closes.
+    pub fn set_mods_active(&self, active: bool) -> Result<()> {
+        if self.process.is_running() {
+            return Err(AppError::new(
+                ErrorCode::GameRunning,
+                "Close Deadlock before switching mods on or off",
+            ));
+        }
+        self.db.lock().set_setting(MODS_ACTIVE_KEY, &active)?;
+        let applied = if active {
+            self.ensure_gameinfo().map(|_| ())
+        } else {
+            self.unpatch_gameinfo().map(|_| ())
+        };
+        if let Err(e) = applied {
+            let _ = self.db.lock().set_setting(MODS_ACTIVE_KEY, &!active);
+            return Err(e);
+        }
+        self.log(
+            "mods",
+            if active {
+                "Switched mods on"
+            } else {
+                "Switched mods off"
+            },
+            None,
+        );
+        Ok(())
     }
 
     /// Records the end of a session and undoes the vanilla unpatch.

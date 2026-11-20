@@ -2,6 +2,7 @@
 //! hand-off from a finished download to the installer.
 
 use crate::app::AppView;
+use crate::smooth_scroll::Smooth as _;
 use crate::theme::*;
 use crate::widgets::*;
 use gpui_kit::component::button::*;
@@ -93,14 +94,9 @@ impl AppView {
         // Use the mod's update key so its row shows the spinner, unless an
         // update of that mod is already running.
         let key = meta
-            .remote_id
-            .and_then(|r| {
-                self.lib
-                    .mods
-                    .values()
-                    .find(|m| m.remote_id == Some(r))
-                    .map(|m| format!("update:{}", m.id))
-            })
+            .id
+            .as_ref()
+            .map(|m| format!("update:{m}"))
             .filter(|k| !self.is_pending(k))
             .unwrap_or_else(|| format!("install:{id}"));
         if self.is_pending(&key) {
@@ -187,7 +183,7 @@ impl AppView {
                         Button::new("dl-clear")
                             .small()
                             .ghost()
-                            .label("Clear finished")
+                            .text_label("Clear finished")
                             .disabled(!finished)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(dm) = &this.downloads {
@@ -206,7 +202,7 @@ impl AppView {
                         Button::new("dl-folder")
                             .small()
                             .ghost()
-                            .label("Open folder")
+                            .text_label("Open folder")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let dir = this.dirs.downloads();
                                 this.open_folder(&dir, cx);
@@ -219,6 +215,7 @@ impl AppView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .smooth(&self.smooth.get("downloads"), cx)
                     .px(px(16.))
                     .pb(px(16.))
                     .flex()
@@ -273,9 +270,9 @@ impl AppView {
                 let dm = dm.clone();
                 let id = id.clone();
                 Button::new((label, key))
-                    .xsmall()
+                    .small()
                     .ghost()
-                    .label(label)
+                    .text_label(label)
                     .on_click(move |_, _, _| {
                         if let Some(dm) = &dm {
                             f(dm, &id);

@@ -203,10 +203,10 @@ impl AppView {
                         .when_some(link, |d, url| {
                             d.child(
                                 Button::new("age-patch-notes")
-                                    .xsmall()
+                                    .small()
                                     .ghost()
                                     .icon(IconName::ExternalLink)
-                                    .label("Patch notes")
+                                    .text_label("Patch notes")
                                     .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
                             )
                         }),

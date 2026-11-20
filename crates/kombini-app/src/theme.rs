@@ -47,12 +47,15 @@ fn edit(theme: &mut Theme) {
     theme.radius_lg = px(10.);
     theme.shadow = false;
     theme.notification.max_items = 3;
+    // Always shown, so long lists (a mod with many files) read as scrollable.
+    theme.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Always;
     let k = &mut theme.colors;
     k.background = c(WINDOW);
     k.foreground = c(TEXT);
     k.border = c(BORDER);
     k.input = c(BORDER);
-    k.ring = c(ACCENT);
+    // Focus outline of inputs and buttons: a quiet tint, not a bright line.
+    k.ring = ca(ACCENT, 0.32);
     k.caret = c(ACCENT);
     k.selection = ca(PRIMARY, 0.55);
     k.muted = c(RAISED);

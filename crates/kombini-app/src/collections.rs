@@ -262,18 +262,18 @@ impl AppView {
                     .gap(px(6.))
                     .child(
                         Button::new("col-all")
-                            .xsmall()
+                            .small()
                             .ghost()
-                            .label("Select all")
+                            .text_label("Select all")
                             .on_click(
                                 cx.listener(|this, _, _, cx| this.collection_select(true, cx)),
                             ),
                     )
                     .child(
                         Button::new("col-none")
-                            .xsmall()
+                            .small()
                             .ghost()
-                            .label("Select none")
+                            .text_label("Select none")
                             .on_click(
                                 cx.listener(|this, _, _, cx| this.collection_select(false, cx)),
                             ),
@@ -336,7 +336,7 @@ impl AppView {
             .child(
                 Button::new("col-install")
                     .primary()
-                    .label(format!("Install {} mod(s)", ids.len()))
+                    .text_label(format!("Install {} mod(s)", ids.len()))
                     .loading(busy)
                     .disabled(busy || ids.is_empty())
                     .on_click(

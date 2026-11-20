@@ -2,6 +2,7 @@
 //! activity, health, VPK inspector, unmanaged import).
 
 use crate::app::AppView;
+use crate::smooth_scroll::Smooth as _;
 use crate::theme::*;
 use crate::widgets::*;
 use gpui_kit::component::button::*;
@@ -65,6 +66,8 @@ pub enum Modal {
     Collection(Box<crate::collections::CollectionView>),
     /// Full-size screenshots of a GameBanana mod.
     Lightbox(Box<crate::gallery::Lightbox>),
+    /// Pick which files of a GameBanana page to install.
+    Files(Box<crate::page_files::FilePicker>),
     /// Enabling `id` would stack a second skin on its hero.
     HeroSwap {
         id: ModId,
@@ -94,6 +97,7 @@ impl Modal {
             Modal::HeroSwap { .. } => "hero-swap",
             Modal::Collection(_) => "collection",
             Modal::Lightbox(_) => "lightbox",
+            Modal::Files(_) => "files",
         }
     }
 }
@@ -355,13 +359,14 @@ impl AppView {
                 action,
             } => {
                 let action = action.clone();
-                let ok_btn = Button::new("confirm-ok")
-                    .label(ok.clone())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.modal = None;
-                        action(this, cx);
-                        cx.notify();
-                    }));
+                let ok_btn =
+                    Button::new("confirm-ok")
+                        .text_label(ok.clone())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.modal = None;
+                            action(this, cx);
+                            cx.notify();
+                        }));
                 let ok_btn = if *danger {
                     ok_btn.danger()
                 } else {
@@ -383,7 +388,7 @@ impl AppView {
                                 .child(
                                     Button::new("confirm-cancel")
                                         .ghost()
-                                        .label("Cancel")
+                                        .text_label("Cancel")
                                         .on_click(
                                             cx.listener(|this, _, _, cx| this.close_modal(cx)),
                                         ),
@@ -438,6 +443,13 @@ impl AppView {
                 600.,
                 self.render_collection(cx),
             ),
+            Modal::Files(view) => {
+                let title = match &view.state {
+                    crate::page_files::PickerLoad::Ready(p) => format!("Install {}", p.name),
+                    _ => "Install".into(),
+                };
+                (title, 600., self.render_file_picker(cx))
+            }
             Modal::Health => ("Health".into(), 560., self.render_health(cx)),
             Modal::Snapshots(list) => {
                 let list = list.clone();
@@ -479,7 +491,7 @@ impl AppView {
                         .child(
                             Button::new("copy-code")
                                 .primary()
-                                .label("Copy to clipboard")
+                                .text_label("Copy to clipboard")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
                                     this.success("Share code copied.");
@@ -499,6 +511,9 @@ impl AppView {
                 .items_center()
                 .justify_center()
                 .bg(ca(0x000000, 0.55))
+                // Nothing behind the dialog sees the mouse: no hover, clicks or
+                // wheel scrolling of the page underneath.
+                .occlude()
                 .on_click(cx.listener(|this, _, _, cx| this.close_modal(cx)))
                 .with_animation(
                     SharedString::from(format!("modal-fade-{kind}")),
@@ -517,6 +532,9 @@ impl AppView {
                         .border_color(c(BORDER))
                         .rounded(px(12.))
                         .on_click(|_, _, cx| cx.stop_propagation())
+                        // A press inside the dialog (selecting text, dragging a
+                        // slider) that is released on the backdrop must not close it.
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
                             div()
                                 .flex()
@@ -528,9 +546,9 @@ impl AppView {
                                 .child(div().flex_1().child(heading(title)))
                                 .child(
                                     Button::new("modal-close")
-                                        .xsmall()
+                                        .small()
                                         .ghost()
-                                        .label("Close")
+                                        .text_label("Close")
                                         .on_click(
                                             cx.listener(|this, _, _, cx| this.close_modal(cx)),
                                         ),
@@ -542,6 +560,7 @@ impl AppView {
                                 .flex_1()
                                 .min_h_0()
                                 .overflow_y_scroll()
+                                .smooth(&self.smooth.get("modal-body"), cx)
                                 .p(px(18.))
                                 .child(body),
                         ),
@@ -589,9 +608,9 @@ impl AppView {
                     )
                     .child(
                         Button::new(("p-share", i))
-                            .xsmall()
+                            .small()
                             .ghost()
-                            .label("Share")
+                            .text_label("Share")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let id = share_id.clone();
                                 this.background(
@@ -611,10 +630,10 @@ impl AppView {
                     .when(!is_active, |d| {
                         d.child(
                             Button::new(("p-del", i))
-                                .xsmall()
+                                .small()
                                 .ghost()
                                 .danger()
-                                .label("Delete")
+                                .text_label("Delete")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let id = del_id.clone();
                                     this.modal = Some(Modal::confirm(
@@ -638,9 +657,9 @@ impl AppView {
                         )
                         .child(
                             Button::new(("p-use", i))
-                                .xsmall()
+                                .small()
                                 .primary()
-                                .label("Switch")
+                                .text_label("Switch")
                                 .loading(switching)
                                 .disabled(switching || self.launch.phase.busy())
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -662,7 +681,7 @@ impl AppView {
             }))
             .child(divider())
             .child(section_title("New profile or import a share code"))
-            .child(Input::new(&self.text_input).small())
+            .child(Input::new(&self.text_input))
             .child(
                 div()
                     .flex()
@@ -670,7 +689,7 @@ impl AppView {
                     .child(
                         Button::new("p-new")
                             .small()
-                            .label("Create (copy current)")
+                            .text_label("Create (copy current)")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let name = this.text_input.read(cx).value().trim().to_string();
                                 if name.is_empty() {
@@ -691,7 +710,7 @@ impl AppView {
                     .child(
                         Button::new("p-import")
                             .small()
-                            .label("Import code")
+                            .text_label("Import code")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let text = this.text_input.read(cx).value().to_string();
                                 this.run(
@@ -708,7 +727,6 @@ impl AppView {
                                             this.queue_gamebanana_install(
                                                 m.submission_id,
                                                 m.file_id,
-                                                false,
                                                 cx,
                                             );
                                         }
@@ -782,8 +800,8 @@ impl AppView {
                     .when_some(issue.fix.clone(), |d, fix| {
                         d.child(
                             Button::new(("h-fix", i))
-                                .xsmall()
-                                .label(crate::mods::fix_label(&fix))
+                                .small()
+                                .text_label(crate::mods::fix_label(&fix))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.apply_fix(fix.clone(), cx)
                                 })),
@@ -811,7 +829,7 @@ impl AppView {
                     .small()
                     .ghost()
                     .icon(crate::icons::Lucide::FolderInput)
-                    .label("Import…")
+                    .text_label("Import…")
                     .tooltip("Import a .kmmsnap file exported from Kombini")
                     .disabled(creating)
                     .on_click(cx.listener(|this, _, _, cx| this.import_snapshot_dialog(cx))),
@@ -820,7 +838,7 @@ impl AppView {
                 Button::new("snap-new")
                     .small()
                     .primary()
-                    .label("Take snapshot")
+                    .text_label("Take snapshot")
                     .loading(creating)
                     .disabled(creating)
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -870,7 +888,7 @@ impl AppView {
                     .child({
                         let (e_id, e_label) = (s.id.clone(), s.label.clone());
                         Button::new(("snap-export", i))
-                            .xsmall()
+                            .small()
                             .ghost()
                             .icon(crate::icons::Lucide::Upload)
                             .tooltip("Export to a .kmmsnap file (includes the mod files)")
@@ -882,7 +900,7 @@ impl AppView {
                     .child({
                         let (d_id, d_label) = (s.id.clone(), s.label.clone());
                         Button::new(("snap-delete", i))
-                            .xsmall()
+                            .small()
                             .ghost()
                             .icon(crate::icons::Lucide::Trash)
                             .tooltip("Delete snapshot")
@@ -910,7 +928,7 @@ impl AppView {
                                 cx.notify();
                             }))
                     })
-                    .child(Button::new(("snap-restore", i)).xsmall().label("Restore").on_click(cx.listener(
+                    .child(Button::new(("snap-restore", i)).small().text_label("Restore").on_click(cx.listener(
                         move |this, _, _, cx| {
                             let id = id.clone();
                             this.modal = Some(Modal::confirm(
@@ -1013,8 +1031,8 @@ impl AppView {
                     ))))
                     .child(
                         Button::new("ins-prev")
-                            .xsmall()
-                            .label("Previous")
+                            .small()
+                            .text_label("Previous")
                             .disabled(offset == 0)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.inspector_page(offset.saturating_sub(INSPECTOR_PAGE), cx)
@@ -1022,8 +1040,8 @@ impl AppView {
                     )
                     .child(
                         Button::new("ins-next")
-                            .xsmall()
-                            .label("Next")
+                            .small()
+                            .text_label("Next")
                             .disabled(offset + INSPECTOR_PAGE >= total)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.inspector_page(offset + INSPECTOR_PAGE, cx)
@@ -1114,7 +1132,7 @@ impl AppView {
                 .child(
                     Button::new("adopt-all")
                         .primary()
-                        .label(format!("Import {} item(s)", list.len()))
+                        .text_label(format!("Import {} item(s)", list.len()))
                         .loading(busy)
                         .disabled(busy)
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -1182,7 +1200,7 @@ impl AppView {
                     .child(
                         Button::new(SharedString::from(format!("migrate-{index}")))
                             .primary()
-                            .label(format!("Import from {}", manager.short()))
+                            .text_label(format!("Import from {}", manager.short()))
                             .loading(busy)
                             .disabled(busy)
                             .on_click(cx.listener(move |this, _, _, cx| {

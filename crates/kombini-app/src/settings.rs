@@ -1,6 +1,7 @@
 //! Settings tab.
 
 use crate::app::AppView;
+use crate::smooth_scroll::Smooth as _;
 use crate::theme::*;
 use crate::widgets::*;
 use gpui_kit::component::button::*;
@@ -30,7 +31,7 @@ impl AppView {
         }
         let s = self.settings.clone();
         let saving = self.is_pending("settings");
-        let toggles: [(&str, &str, bool, Toggle); 9] = [
+        let toggles: [(&str, &str, bool, Toggle); 10] = [
             (
                 "Block changes while Deadlock runs",
                 "Prevents half-applied changes while the game has files open.",
@@ -38,8 +39,8 @@ impl AppView {
                 |s| &mut s.block_while_running,
             ),
             (
-                "Repair gameinfo.gi after game updates",
-                "Steam updates can remove the mod search paths; this puts them back on startup.",
+                "Keep mods in place automatically",
+                "Puts back missing mod files and repairs gameinfo.gi (Steam updates remove it) on startup, when Kombini regains focus and after the game closes.",
                 s.auto_reapply_gameinfo,
                 |s| &mut s.auto_reapply_gameinfo,
             ),
@@ -62,8 +63,8 @@ impl AppView {
                 |s| &mut s.keep_archives,
             ),
             (
-                "Check for mod updates on startup",
-                "Asks GameBanana for newer files of your installed mods.",
+                "Check for mod updates automatically",
+                "Asks GameBanana for newer files of your installed mods, at most every 6 hours.",
                 s.check_updates_on_startup,
                 |s| &mut s.check_updates_on_startup,
             ),
@@ -80,6 +81,12 @@ impl AppView {
                 |s| &mut s.hero_swap_prompt,
             ),
             (
+                "Switch files instead of stacking them",
+                "Installing another file from a mod's page turns off the ones you have. Off keeps them all on. The install window lets you choose each time.",
+                s.switch_variants,
+                |s| &mut s.switch_variants,
+            ),
+            (
                 "Shuffle skins on Launch Modded",
                 "Every hero with two or more skins gets a random one each time you launch modded.",
                 s.shuffle_on_launch,
@@ -91,6 +98,7 @@ impl AppView {
             .id("settings")
             .size_full()
             .overflow_y_scroll()
+            .smooth(&self.smooth.get("settings"), cx)
             .p(px(24.))
             .flex()
             .flex_col()
@@ -115,7 +123,7 @@ impl AppView {
                             .child(
                                 Button::new("set-game")
                                     .small()
-                                    .label("Change folder…")
+                                    .text_label("Change folder…")
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.pick_game_folder(cx)),
                                     ),
@@ -126,7 +134,7 @@ impl AppView {
                                     Button::new("open-addons")
                                         .small()
                                         .ghost()
-                                        .label("Open addons folder")
+                                        .text_label("Open addons folder")
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.open_folder(&addons, cx)
                                         })),
@@ -136,7 +144,7 @@ impl AppView {
                                 Button::new("open-data")
                                     .small()
                                     .ghost()
-                                    .label("Open app data")
+                                    .text_label("Open app data")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         let d = this.dirs.data.clone();
                                         this.open_folder(&d, cx)
@@ -203,14 +211,14 @@ impl AppView {
                             .flex()
                             .gap(px(8.))
                             .items_center()
-                            .child(div().flex_1().child(Input::new(&self.launch_input).small()))
+                            .child(div().flex_1().child(Input::new(&self.launch_input)))
                             .child(self.launch_save_state()),
                     )
                     .child(
                         div().flex().gap(px(8.)).child(
                             Button::new("edit-autoexec")
                                 .small()
-                                .label("Edit autoexec.cfg")
+                                .text_label("Edit autoexec.cfg")
                                 .tooltip("Opens game\\citadel\\cfg\\autoexec.cfg in your text editor")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.run(
@@ -281,7 +289,7 @@ impl AppView {
                             .child(
                                 Button::new("m-updates")
                                     .small()
-                                    .label("Check for updates")
+                                    .text_label("Check for updates")
                                     .loading(self.is_pending("updates"))
                                     .disabled(self.is_pending("updates"))
                                     .on_click(
@@ -291,15 +299,15 @@ impl AppView {
                             .child(
                                 Button::new("m-adopt")
                                     .small()
-                                    .label("Import existing addons")
+                                    .text_label("Import existing addons")
                                     .on_click(cx.listener(|this, _, _, cx| this.open_adopt(cx))),
                             )
-                            .child(Button::new("m-export").small().label("Export mod bundle…").loading(self.is_pending("export")).disabled(self.is_pending("export")).on_click(cx.listener(|this, _, _, cx| this.export_bundle(cx))))
-                            .child(Button::new("m-import").small().label("Import mod bundle…").on_click(cx.listener(|this, _, _, cx| this.import_bundle_dialog(cx))))
+                            .child(Button::new("m-export").small().text_label("Export mod bundle…").loading(self.is_pending("export")).disabled(self.is_pending("export")).on_click(cx.listener(|this, _, _, cx| this.export_bundle(cx))))
+                            .child(Button::new("m-import").small().text_label("Import mod bundle…").on_click(cx.listener(|this, _, _, cx| this.import_bundle_dialog(cx))))
                             .child(
                                 Button::new("m-health")
                                     .small()
-                                    .label("Health check")
+                                    .text_label("Health check")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.modal = Some(crate::modal::Modal::Health);
                                         cx.notify();
@@ -309,7 +317,7 @@ impl AppView {
                                 Button::new("m-gc")
                                     .small()
                                     .ghost()
-                                    .label("Free unused storage")
+                                    .text_label("Free unused storage")
                                     .loading(self.is_pending("gc"))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.run(
@@ -341,10 +349,10 @@ impl AppView {
     fn render_credits(&self) -> impl IntoElement {
         let link = |id: &'static str, label: &'static str, url: &'static str| {
             Button::new(id)
-                .xsmall()
+                .small()
                 .ghost()
                 .icon(gpui_kit::component::IconName::ExternalLink)
-                .label(label)
+                .text_label(label)
                 .on_click(move |_, _, cx| cx.open_url(url))
         };
         let entry = |title: &'static str, body: &'static str| {

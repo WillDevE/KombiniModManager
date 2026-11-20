@@ -1,6 +1,6 @@
 //! Health checks with one-click fixes.
 
-use crate::{Engine, NoProgress, Result};
+use crate::{ChangeReport, Engine, NoProgress, Progress, Result};
 use kombini_core::{FilesState, FixAction, HealthIssue, Level, ModId};
 use kombini_gameinfo::IssueCode;
 use serde::Serialize;
@@ -32,11 +32,12 @@ impl Engine {
     /// use the listing cache).
     pub fn health(&self) -> HealthReport {
         let mut issues = Vec::new();
-        let any_enabled = self.with_state(|s| {
-            s.mods
-                .values()
-                .any(|m| m.files.iter().any(|f| f.placement.is_mounted()))
-        });
+        let any_enabled = self.mods_active()
+            && self.with_state(|s| {
+                s.mods
+                    .values()
+                    .any(|m| m.files.iter().any(|f| f.placement.is_mounted()))
+            });
 
         let gi = self.gameinfo_status();
         for gi_issue in &gi.issues {
@@ -195,6 +196,48 @@ impl Engine {
         }
         let worst = issues.iter().map(|i| i.level).min();
         HealthReport { issues, worst }
+    }
+
+    /// True when enabled mods are not fully in the game: files missing from
+    /// the addons folders (and restorable), or gameinfo.gi not mounting them.
+    /// Always false while mods are switched off.
+    pub fn needs_repair(&self) -> bool {
+        self.mods_active()
+            && self.health().issues.iter().any(|i| match &i.fix {
+                Some(FixAction::ReapplyGameinfo) => true,
+                Some(FixAction::RestoreFiles { .. }) => i.level == Level::Error,
+                _ => false,
+            })
+    }
+
+    /// Keeps the game modded without a manual "reapply": re-reads the addons
+    /// folders and, if something is off ([`Engine::needs_repair`]), puts it
+    /// back. Does nothing while mods are off, the game runs or Steam updates
+    /// it. Returns what was fixed, or `None` when all was in place.
+    pub fn repair_if_needed(&self, progress: &dyn Progress) -> Result<Option<ChangeReport>> {
+        if !self.mods_active()
+            || self.process.is_running()
+            || kombini_steam::read_build_info(&self.paths.root).update_in_progress
+        {
+            return Ok(None);
+        }
+        self.rescan()?;
+        if !self.needs_repair() {
+            return Ok(None);
+        }
+        let mut report = self.restore_files(progress)?;
+        // Restoring places files and patches gameinfo when anything mounts;
+        // make sure gameinfo is right even when no file had to move.
+        if self.ensure_gameinfo()?.changed {
+            report.gameinfo_changed = true;
+        }
+        report.summary = match (report.placed + report.moved, report.gameinfo_changed) {
+            (0, true) => "Repaired gameinfo.gi so your mods load".to_owned(),
+            (n, true) => format!("Put {n} mod file(s) back and repaired gameinfo.gi"),
+            (n, false) => format!("Put {n} missing mod file(s) back"),
+        };
+        self.log("repair", &report.summary, None);
+        Ok(Some(report))
     }
 
     /// Executes a fix suggested by [`Engine::health`].

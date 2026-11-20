@@ -63,10 +63,10 @@ impl LaunchUi {
     }
 
     pub fn button_label(&self) -> String {
-        if self.phase.busy() && self.mode == Some(LaunchMode::Modded) {
+        if self.phase.busy() {
             self.phase_text()
         } else {
-            "Launch Modded".into()
+            "Launch game".into()
         }
     }
 
@@ -81,7 +81,7 @@ impl LaunchUi {
             Button::new("launch-dismiss")
                 .small()
                 .ghost()
-                .label("Dismiss")
+                .text_label("Dismiss")
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.launch.dismissed = true;
                     this.launch.apply(LaunchEvent::Reset);
@@ -100,7 +100,7 @@ impl LaunchUi {
                     Button::new("launch-stop-wait")
                         .small()
                         .ghost()
-                        .label("Stop waiting")
+                        .text_label("Stop waiting")
                         .on_click(cx.listener(|this, _, _, _| {
                             this.launch.stop_waiting.store(true, Ordering::Relaxed);
                         })),
@@ -139,7 +139,7 @@ impl LaunchUi {
                             Button::new("bisect-start")
                                 .small()
                                 .danger()
-                                .label("Find broken mod")
+                                .text_label("Find broken mod")
                                 .tooltip("Disables half of your mods at a time to find the culprit")
                                 .on_click(cx.listener(|this, _, _, cx| this.bisect_start(cx))),
                         )
@@ -147,7 +147,8 @@ impl LaunchUi {
                             Button::new("launch-vanilla-test")
                                 .small()
                                 .ghost()
-                                .label("Try vanilla")
+                                .text_label("Try without mods")
+                                .tooltip("Starts Deadlock once without mods; your mods stay on")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.start_launch(LaunchMode::Vanilla, cx)
                                 })),
@@ -177,7 +178,7 @@ fn render_bisect(b: &Bisect, cx: &mut Context<AppView>) -> AnyElement {
                     Button::new("bisect-disable")
                         .small()
                         .primary()
-                        .label("Restore others & disable it")
+                        .text_label("Restore others & disable it")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.bisect_finish(Some(id.clone()), cx)
                         })),
@@ -186,7 +187,7 @@ fn render_bisect(b: &Bisect, cx: &mut Context<AppView>) -> AnyElement {
                     Button::new("bisect-keep")
                         .small()
                         .ghost()
-                        .label("Restore all")
+                        .text_label("Restore all")
                         .on_click(cx.listener(|this, _, _, cx| this.bisect_finish(None, cx))),
                 )
                 .into_any_element()
@@ -198,7 +199,7 @@ fn render_bisect(b: &Bisect, cx: &mut Context<AppView>) -> AnyElement {
             .child(
                 Button::new("bisect-restore")
                     .small()
-                    .label("Restore my mods")
+                    .text_label("Restore my mods")
                     .on_click(cx.listener(|this, _, _, cx| this.bisect_finish(None, cx))),
             )
             .into_any_element(),
@@ -214,21 +215,21 @@ fn render_bisect(b: &Bisect, cx: &mut Context<AppView>) -> AnyElement {
                 Button::new("bisect-problem")
                     .small()
                     .danger()
-                    .label("Problem still happens")
+                    .text_label("Problem still happens")
                     .on_click(cx.listener(|this, _, _, cx| this.bisect_report(true, cx))),
             )
             .child(
                 Button::new("bisect-ok")
                     .small()
                     .success()
-                    .label("Works fine")
+                    .text_label("Works fine")
                     .on_click(cx.listener(|this, _, _, cx| this.bisect_report(false, cx))),
             )
             .child(
                 Button::new("bisect-cancel")
                     .small()
                     .ghost()
-                    .label("Stop")
+                    .text_label("Stop")
                     .on_click(cx.listener(|this, _, _, cx| this.bisect_finish(None, cx))),
             )
             .into_any_element(),
@@ -347,6 +348,8 @@ impl AppView {
                     Err(e) => this.error("Recording the session", &e),
                 }
                 this.refresh(cx);
+                this.last_repair_check = None;
+                this.auto_repair(cx);
             })
             .ok();
         })

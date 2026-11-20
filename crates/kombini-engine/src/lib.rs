@@ -116,6 +116,8 @@ pub struct ChangeReport {
     pub warnings: Vec<String>,
 }
 
+const LAST_UPDATE_CHECK_KEY: &str = "last_update_check";
+
 pub struct Engine {
     pub(crate) paths: GamePaths,
     pub(crate) dirs: AppDirs,
@@ -240,7 +242,14 @@ impl Engine {
                 .set_last_build(engine.game_id.as_str(), &build.fingerprint)?;
         }
         let pending_vanilla = engine.take_vanilla_pending();
-        if engine.settings().auto_reapply_gameinfo || pending_vanilla {
+        if !engine.mods_active() {
+            if engine.gameinfo_status().patched && !build.update_in_progress {
+                match engine.unpatch_gameinfo() {
+                    Ok(r) => report.gameinfo_reapplied = r.changed,
+                    Err(e) => tracing::warn!(error = %e, "could not keep gameinfo vanilla"),
+                }
+            }
+        } else if engine.settings().auto_reapply_gameinfo || pending_vanilla {
             let has_mounts = engine
                 .state
                 .read()
@@ -590,8 +599,12 @@ impl Engine {
         ours.max(foreign)
     }
 
-    /// Ensures the managed gameinfo block mounts every shard in use.
+    /// Ensures the managed gameinfo block mounts every shard in use. While
+    /// mods are switched off it keeps gameinfo vanilla instead.
     pub fn ensure_gameinfo(&self) -> Result<WriteReport> {
+        if !self.mods_active() {
+            return self.unpatch_gameinfo();
+        }
         self.mark_quiet();
         GameInfoFile::new(self.paths.gameinfo())
             .ensure(self.needed_shards())
@@ -642,6 +655,20 @@ impl Engine {
         *self.foreign.write() = outcome.foreign.clone();
         *self.other_managers.write() = disk.other_managers.clone();
         Ok(outcome.report())
+    }
+
+    /// When mod updates were last checked automatically (unix seconds).
+    pub fn last_update_check(&self) -> Option<i64> {
+        self.db
+            .lock()
+            .get_setting::<i64>(LAST_UPDATE_CHECK_KEY)
+            .ok()
+            .flatten()
+    }
+
+    pub fn set_last_update_check(&self, at: i64) -> Result<()> {
+        self.db.lock().set_setting(LAST_UPDATE_CHECK_KEY, &at)?;
+        Ok(())
     }
 
     pub(crate) fn take_vanilla_pending(&self) -> bool {

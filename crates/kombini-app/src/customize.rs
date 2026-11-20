@@ -5,6 +5,7 @@
 use crate::app::AppView;
 use crate::crosshair::{COMMAND_LIBRARY, Crosshair, get_block, has_command, set_block};
 use crate::icons::Lucide;
+use crate::smooth_scroll::Smooth as _;
 use crate::theme::*;
 use crate::widgets::*;
 use gpui_kit::component::button::*;
@@ -482,7 +483,7 @@ impl AppView {
             )
             .child(
                 Button::new(("xh-dec", i))
-                    .xsmall()
+                    .small()
                     .ghost()
                     .icon(IconName::Minus)
                     .disabled(busy || value <= spec.min)
@@ -498,7 +499,7 @@ impl AppView {
             )
             .child(
                 Button::new(("xh-inc", i))
-                    .xsmall()
+                    .small()
                     .ghost()
                     .icon(IconName::Plus)
                     .disabled(busy || value >= spec.max)
@@ -647,12 +648,12 @@ impl AppView {
                                     .when(!elsewhere, |d| {
                                         d.child(
                                             Button::new(("cmd", g * 100 + i))
-                                                .xsmall()
+                                                .small()
                                                 .when(added, |b| {
-                                                    b.icon(IconName::Check).label("Added")
+                                                    b.icon(IconName::Check).text_label("Added")
                                                 })
                                                 .when(!added, |b| {
-                                                    b.icon(IconName::Plus).label("Add")
+                                                    b.icon(IconName::Plus).text_label("Add")
                                                 })
                                                 .when(!added, |b| b.primary())
                                                 .disabled(busy)
@@ -687,10 +688,10 @@ impl AppView {
         let presets = Crosshair::PRESETS.iter().enumerate().map(|(i, (name, p))| {
             let p = *p;
             Button::new(("xh-preset", i))
-                .xsmall()
+                .small()
                 .when(p == x, |b| b.primary())
                 .when(p != x, |b| b.ghost())
-                .label(*name)
+                .text_label(*name)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.customize.crosshair = Some(p);
                     cx.notify();
@@ -728,7 +729,7 @@ impl AppView {
                                     .small()
                                     .primary()
                                     .icon(Lucide::Save)
-                                    .label(if unsaved { "Save to autoexec" } else { "Saved" })
+                                    .text_label(if unsaved { "Save to autoexec" } else { "Saved" })
                                     .disabled(busy || !unsaved)
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.crosshair_save(cx)),
@@ -738,7 +739,7 @@ impl AppView {
                                 Button::new("xh-game")
                                     .small()
                                     .icon(IconName::FolderOpen)
-                                    .label("Load from game settings")
+                                    .text_label("Load from game settings")
                                     .tooltip(
                                         "Reads the crosshair you set up in Deadlock's own editor",
                                     )
@@ -753,7 +754,7 @@ impl AppView {
                                         .small()
                                         .ghost()
                                         .icon(IconName::Undo)
-                                        .label("Stop overriding")
+                                        .text_label("Stop overriding")
                                         .tooltip(
                                             "Removes Kombini's crosshair lines from the autoexec",
                                         )
@@ -775,6 +776,7 @@ impl AppView {
             .id("customize")
             .size_full()
             .overflow_y_scroll()
+            .smooth(&self.smooth.get("customize"), cx)
             .p(px(20.))
             .flex()
             .flex_col()

@@ -165,7 +165,7 @@ impl AppView {
                     .small()
                     .ghost()
                     .icon(Lucide::Power)
-                    .label("Enable")
+                    .text_label("Enable")
                     .loading(toggling)
                     .disabled(toggling || busy || all_on)
                     .on_click(
@@ -176,7 +176,7 @@ impl AppView {
                 Button::new("multi-disable")
                     .small()
                     .ghost()
-                    .label("Disable")
+                    .text_label("Disable")
                     .disabled(toggling || busy || all_off)
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.set_enabled(dis.clone(), false, cx)),
@@ -191,7 +191,7 @@ impl AppView {
                     } else {
                         IconName::Star
                     })
-                    .label(if all_fav { "Unfavorite" } else { "Favorite" })
+                    .text_label(if all_fav { "Unfavorite" } else { "Favorite" })
                     .loading(self.is_pending("favorite"))
                     .disabled(self.is_pending("favorite"))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -203,7 +203,7 @@ impl AppView {
                     .small()
                     .ghost()
                     .icon(Lucide::Boxes)
-                    .label("Group…")
+                    .text_label("Group…")
                     .tooltip("Put these mods in a group you can switch on and off at once")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.prompt_new_group(grp.clone(), window, cx)
@@ -214,7 +214,7 @@ impl AppView {
                     .small()
                     .ghost()
                     .icon(Lucide::Combine)
-                    .label("Merge…")
+                    .text_label("Merge…")
                     .tooltip(if n < 2 {
                         "Select at least two mods to merge"
                     } else {
@@ -230,7 +230,7 @@ impl AppView {
                     .small()
                     .ghost()
                     .icon(Lucide::Trash)
-                    .label("Uninstall")
+                    .text_label("Uninstall")
                     .disabled(busy)
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.confirm_uninstall(del.clone(), cx)),
@@ -329,13 +329,13 @@ impl AppView {
                     .child(
                         Button::new("prompt-cancel")
                             .ghost()
-                            .label("Cancel")
+                            .text_label("Cancel")
                             .on_click(cx.listener(|this, _, _, cx| this.close_modal(cx))),
                     )
                     .child(
                         Button::new("prompt-ok")
                             .primary()
-                            .label(ok)
+                            .text_label(ok)
                             .disabled(empty)
                             .on_click(cx.listener(|this, _, _, cx| this.submit_prompt(cx))),
                     ),
@@ -437,7 +437,7 @@ impl AppView {
                     .small()
                     .primary()
                     .icon(IconName::Plus)
-                    .label(if sel.is_empty() {
+                    .text_label(if sel.is_empty() {
                         "New group".to_owned()
                     } else {
                         format!("New group from {} selected", sel.len())
@@ -533,9 +533,9 @@ impl AppView {
                         )
                         .child(
                             Button::new(("group-select", i))
-                                .xsmall()
+                                .small()
                                 .ghost()
-                                .label("Select")
+                                .text_label("Select")
                                 .tooltip("Select these mods in the list")
                                 .disabled(total == 0)
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -550,9 +550,9 @@ impl AppView {
                         )
                         .child(
                             Button::new(("group-rename", i))
-                                .xsmall()
+                                .small()
                                 .ghost()
-                                .label("Rename")
+                                .text_label("Rename")
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     let gid = ren_id.clone();
                                     this.open_prompt(
@@ -580,7 +580,7 @@ impl AppView {
                         )
                         .child(
                             Button::new(("group-delete", i))
-                                .xsmall()
+                                .small()
                                 .ghost()
                                 .icon(Lucide::Trash)
                                 .tooltip("Delete group (its mods stay installed)")
@@ -793,14 +793,14 @@ impl AppView {
                     .child(
                         Button::new("merge-cancel")
                             .ghost()
-                            .label("Cancel")
+                            .text_label("Cancel")
                             .on_click(cx.listener(|this, _, _, cx| this.close_modal(cx))),
                     )
                     .child(
                         Button::new("merge-ok")
                             .primary()
                             .icon(Lucide::Combine)
-                            .label(format!("Merge {} mods", ids.len()))
+                            .text_label(format!("Merge {} mods", ids.len()))
                             .disabled(empty)
                             .on_click(cx.listener(|this, _, _, cx| this.start_merge(cx))),
                     ),
@@ -928,7 +928,7 @@ impl AppView {
                 div().flex().justify_end().child(
                     Button::new("variants-later")
                         .ghost()
-                        .label(if selected_count > 1 {
+                        .text_label(if selected_count > 1 {
                             format!("Keep all {selected_count}")
                         } else {
                             "Keep current".to_owned()

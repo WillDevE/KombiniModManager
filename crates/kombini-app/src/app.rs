@@ -81,6 +81,13 @@ pub enum Thumb {
     Failed,
 }
 
+/// Automatic mod update checks run at most this often (manual ones always).
+pub const UPDATE_CHECK_COOLDOWN_SECS: i64 = 6 * 60 * 60;
+/// Focus changes check the mods at most this often.
+const AUTO_REPAIR_THROTTLE: Duration = Duration::from_secs(20);
+/// The "Check for updates" button can be pressed again after this.
+const MANUAL_UPDATE_COOLDOWN: Duration = Duration::from_secs(60);
+
 pub struct AppView {
     pub boot: Boot,
     pub dirs: AppDirs,
@@ -122,6 +129,8 @@ pub struct AppView {
     pub filter_input: Entity<InputState>,
     pub rows: Vec<ModId>,
     pub list_scroll: UniformListScrollHandle,
+    /// Smooth wheel scrolling state of each scroll area.
+    pub smooth: crate::smooth_scroll::SmoothAreas,
     pub pending: HashSet<String>,
     pub ops: Vec<Op>,
     pub history: Vec<OpRecord>,
@@ -141,6 +150,14 @@ pub struct AppView {
     pub watcher: Option<AddonsWatcher>,
     pub foreign_count: usize,
     pub other_managers: Vec<String>,
+    /// Mods switched on for the game (title-bar toggle, kept after closing).
+    pub mods_active: bool,
+    /// An automatic or manual repair check is running.
+    pub repairing: bool,
+    /// Last automatic repair check, to throttle focus-triggered checks.
+    pub last_repair_check: Option<Instant>,
+    /// Last press of the status-bar "Check for updates" button.
+    pub last_manual_update_check: Option<Instant>,
     pub update_count: usize,
     pub last_tick_busy: bool,
     pub inbox: crate::instance::Inbox,
@@ -166,6 +183,15 @@ impl AppView {
         let discover_input = cx
             .new(|cx| InputState::new(window, cx).placeholder("Search GameBanana (2+ characters)"));
         let mut subs = Vec::new();
+        // Coming back to Kombini (from the game, Explorer, another manager):
+        // check that the mods are still in place.
+        subs.push(
+            cx.observe_window_activation(window, |this: &mut Self, window, cx| {
+                if window.is_window_active() {
+                    this.auto_repair(cx);
+                }
+            }),
+        );
         subs.push(cx.subscribe_in(
             &filter_input,
             window,
@@ -206,6 +232,21 @@ impl AppView {
                 }
             },
         ));
+        // Automatic update checks while Kombini stays open (cooldown applies).
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(15 * 60))
+                    .await;
+                if this
+                    .update(cx, |this, cx| this.maybe_check_updates(cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         let ticker = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -228,6 +269,10 @@ impl AppView {
             lib: Arc::new(LibraryState::empty()),
             settings: Settings::default(),
             health: None,
+            mods_active: true,
+            repairing: false,
+            last_repair_check: None,
+            last_manual_update_check: None,
             selected: None,
             locker_hero: None,
             roster: None,
@@ -247,6 +292,7 @@ impl AppView {
             filter_input,
             rows: Vec::new(),
             list_scroll: UniformListScrollHandle::new(),
+            smooth: Default::default(),
             pending: HashSet::new(),
             ops: Vec::new(),
             history: Vec::new(),
@@ -408,9 +454,8 @@ impl AppView {
                     .title("Game update handled"),
             );
         }
-        if self.settings.check_updates_on_startup {
-            self.check_updates(false, cx);
-        }
+        self.maybe_check_updates(cx);
+        self.auto_repair(cx);
         cx.notify();
     }
 
@@ -424,6 +469,7 @@ impl AppView {
         self.lib = Arc::new(engine.state());
         self.foreign_count = engine.foreign_files().len();
         self.other_managers = engine.other_managers();
+        self.mods_active = engine.mods_active();
         self.update_count = self
             .lib
             .mods
@@ -666,7 +712,7 @@ impl AppView {
             R::GameBanana {
                 submission_id,
                 file_id,
-            } => self.queue_gamebanana_install(submission_id, file_id, false, cx),
+            } => self.queue_gamebanana_install(submission_id, file_id, cx),
             R::Collection { collection_id } => self.open_collection(collection_id, cx),
             R::Archive { path } => self.install_local(vec![path], cx),
             R::ArchiveUrl { url } => {
@@ -732,7 +778,7 @@ impl AppView {
             |this, r, cx| {
                 this.success(format!("Imported profile {}.", r.name));
                 for m in &r.missing {
-                    this.queue_gamebanana_install(m.submission_id, m.file_id, false, cx);
+                    this.queue_gamebanana_install(m.submission_id, m.file_id, cx);
                 }
             },
         );
@@ -930,27 +976,125 @@ impl AppView {
         );
     }
 
-    pub fn reapply(&mut self, cx: &mut Context<Self>) {
+    /// Switches mods on or off for the game; stays that way after closing.
+    pub fn set_mods_active(&mut self, active: bool, cx: &mut Context<Self>) {
+        if self.is_pending("mods-active") {
+            return;
+        }
+        self.mods_active = active;
         self.run(
-            "reapply",
-            "Reapplying mods",
-            cx,
-            |e, p| {
-                let change = e.restore_files(p)?;
-                e.ensure_gameinfo()?;
-                Ok(change)
+            "mods-active",
+            if active {
+                "Switching mods on"
+            } else {
+                "Switching mods off"
             },
-            |this, change, _| {
-                this.success(if change.placed + change.moved == 0 {
-                    "Everything is already in place.".to_owned()
+            cx,
+            move |e, _| e.set_mods_active(active),
+            move |this, _, _| {
+                this.success(if active {
+                    "Mods are on. Deadlock starts with them, even after you close Kombini."
+                        .to_owned()
                 } else {
-                    format!(
-                        "Reapplied: {} file(s) placed, {} moved.",
-                        change.placed, change.moved
-                    )
+                    "Mods are off. Deadlock starts without them until you switch them back on."
+                        .to_owned()
                 })
             },
         );
+    }
+
+    /// Automatic check that enabled mods are in the game (startup, window
+    /// focus, after the game closes). Quiet unless it had to fix something.
+    pub fn auto_repair(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.auto_reapply_gameinfo
+            || self
+                .last_repair_check
+                .is_some_and(|t| t.elapsed() < AUTO_REPAIR_THROTTLE)
+        {
+            return;
+        }
+        self.last_repair_check = Some(Instant::now());
+        self.repair(cx);
+    }
+
+    /// Re-reads the addons folders and puts back whatever is out of place
+    /// (missing files of enabled mods, gameinfo.gi). Quiet unless it fixed
+    /// something.
+    pub fn repair(&mut self, cx: &mut Context<Self>) {
+        if self.repairing
+            || self.engine.is_none()
+            || self.launch.phase.busy()
+            || !self.ops.is_empty()
+        {
+            return;
+        }
+        self.repairing = true;
+        cx.notify();
+        let Some(engine) = self.engine.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    engine.rescan()?;
+                    engine.repair_if_needed(&kombini_engine::NoProgress)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.repairing = false;
+                match result {
+                    Ok(Some(report)) => {
+                        this.toast(
+                            Notification::success(report.summary.clone()).title("Mods repaired"),
+                        );
+                        for w in report.warnings.iter().take(2) {
+                            this.toast(Notification::warning(w.clone()));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(error = %e, "automatic repair failed"),
+                }
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The status-bar button: checks now, then rests for a minute.
+    pub fn manual_update_check(&mut self, cx: &mut Context<Self>) {
+        if self
+            .last_manual_update_check
+            .is_some_and(|t| t.elapsed() < MANUAL_UPDATE_COOLDOWN)
+        {
+            return;
+        }
+        self.last_manual_update_check = Some(Instant::now());
+        self.check_updates(true, cx);
+        // Re-enable the button when the minute is up.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(MANUAL_UPDATE_COOLDOWN).await;
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
+    }
+
+    /// Checks for mod updates if the setting is on and the last automatic
+    /// check is older than [`UPDATE_CHECK_COOLDOWN_SECS`].
+    pub fn maybe_check_updates(&mut self, cx: &mut Context<Self>) {
+        let Some(engine) = self.engine.as_ref() else {
+            return;
+        };
+        if !self.settings.check_updates_on_startup || self.is_pending("updates") {
+            return;
+        }
+        let due = engine
+            .last_update_check()
+            .is_none_or(|t| kombini_storage::now() - t >= UPDATE_CHECK_COOLDOWN_SECS);
+        if due {
+            self.check_updates(false, cx);
+        }
     }
 
     pub fn check_updates(&mut self, manual: bool, cx: &mut Context<Self>) {
@@ -959,7 +1103,11 @@ impl AppView {
             "updates",
             "Checking for updates",
             cx,
-            move |e, p| crate::discover::check_updates(e, &gb, p),
+            move |e, p| {
+                let result = crate::discover::check_updates(e, &gb, p)?;
+                let _ = e.set_last_update_check(kombini_storage::now());
+                Ok(result)
+            },
             move |this, (found, failed), _| {
                 if found > 0 {
                     this.toast(
@@ -1013,7 +1161,6 @@ impl AppView {
         let profile_name = self.lib.profile().name.clone();
         let enabled = self.lib.profile().enabled.len();
         let busy = self.launch.phase.busy();
-        let reapplying = self.is_pending("reapply");
         let (status_text, status_color) = self.status_pill();
         let status_busy = busy || !self.ops.is_empty();
         div()
@@ -1054,7 +1201,7 @@ impl AppView {
             .child(
                 Button::new("profile-switch")
                     .small()
-                    .label(format!("{profile_name} · {enabled} on"))
+                    .text_label(format!("{profile_name} · {enabled} on"))
                     .dropdown_caret(true)
                     .tooltip("Switch, create or share profiles")
                     .disabled(busy)
@@ -1091,48 +1238,67 @@ impl AppView {
                     ),
             )
             .child(div().flex_1())
-            .child(
-                Button::new("reapply")
-                    .small()
-                    .ghost()
-                    .icon(gpui_kit::component::IconName::RefreshCw)
-                    .label("Reapply")
-                    .tooltip("Put every enabled mod back in place and repair gameinfo.gi")
-                    .loading(reapplying)
-                    .disabled(reapplying || busy || self.engine.is_none())
-                    .on_click(cx.listener(|this, _, _, cx| this.reapply(cx))),
-            )
-            .child(
-                Button::new("launch-vanilla")
-                    .small()
-                    .outline()
-                    .icon(crate::icons::Lucide::Gamepad2)
-                    .label("Launch Vanilla")
-                    .tooltip("Start Deadlock without mods (restored after the game closes)")
-                    .loading(
-                        busy && self.launch.mode
-                            == Some(kombini_engine::launch::LaunchMode::Vanilla),
+            .child({
+                let on = self.mods_active;
+                let switching = self.is_pending("mods-active");
+                let can_switch = !(switching || busy || self.engine.is_none());
+                let mode = if on {
+                    kombini_engine::launch::LaunchMode::Modded
+                } else {
+                    kombini_engine::launch::LaunchMode::Vanilla
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(14.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .id("mods-active-label")
+                                    .when(can_switch, |d| {
+                                        d.cursor_pointer().on_click(cx.listener(
+                                            move |this, _, _, cx| this.set_mods_active(!on, cx),
+                                        ))
+                                    })
+                                    .text_sm()
+                                    .text_color(c(if on { TEXT } else { MUTED }))
+                                    .child(ctl_text("Mods")),
+                            )
+                            .child(
+                                gpui_kit::component::switch::Switch::new("mods-active-switch")
+                                    .checked(on)
+                                    .disabled(!can_switch)
+                                    .tooltip(if on {
+                                        "Mods on: they load when Deadlock starts, even after you close Kombini."
+                                    } else {
+                                        "Mods off: Deadlock starts without them, even after you close Kombini. They stay installed."
+                                    })
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                        this.set_mods_active(*checked, cx)
+                                    })),
+                            ),
                     )
-                    .disabled(busy || self.engine.is_none())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.start_launch(kombini_engine::launch::LaunchMode::Vanilla, cx)
-                    })),
-            )
-            .child(
-                Button::new("launch-modded")
-                    .small()
-                    .primary()
-                    .icon(crate::icons::Lucide::Rocket)
-                    .label(self.launch.button_label())
-                    .loading(
-                        busy && self.launch.mode
-                            == Some(kombini_engine::launch::LaunchMode::Modded),
+                    .child(vsep())
+                    .child(
+                        Button::new("launch-game")
+                            .primary()
+                            .min_w(px(140.))
+                            .icon(crate::icons::Lucide::Gamepad2)
+                            .text_label(self.launch.button_label())
+                            .tooltip(if on {
+                                format!("Start Deadlock with {enabled} mod(s)")
+                            } else {
+                                "Start Deadlock without mods".to_owned()
+                            })
+                            .loading(busy)
+                            .disabled(busy || switching || self.engine.is_none())
+                            .on_click(cx.listener(move |this, _, _, cx| this.start_launch(mode, cx))),
                     )
-                    .disabled(busy || self.engine.is_none())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.start_launch(kombini_engine::launch::LaunchMode::Modded, cx)
-                    })),
-            )
+            })
     }
 
     fn status_pill(&self) -> (String, u32) {
@@ -1144,6 +1310,7 @@ impl AppView {
         }
         match self.health.as_ref().and_then(|h| h.worst) {
             Some(Level::Error) => ("Needs attention".into(), CORAL),
+            _ if !self.mods_active => ("Mods off".into(), MUTED),
             Some(Level::Warning) => ("Check warnings".into(), AMBER),
             _ => ("Ready".into(), ACCENT),
         }
@@ -1225,7 +1392,7 @@ impl AppView {
                             .size(px(15.))
                             .text_color(if active { c(ACCENT) } else { c(FAINT) }),
                     )
-                    .child(name)
+                    .child(ctl_text(name))
                     .when_some(count, |d, n| {
                         d.child(
                             div()
@@ -1276,7 +1443,7 @@ impl AppView {
                                 Button::new("banner-fix")
                                     .small()
                                     .danger()
-                                    .label(crate::mods::fix_label(&fix))
+                                    .text_label(crate::mods::fix_label(&fix))
                                     .loading(pending)
                                     .disabled(pending)
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1288,7 +1455,7 @@ impl AppView {
                             Button::new("banner-health")
                                 .small()
                                 .ghost()
-                                .label("Details")
+                                .text_label("Details")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.modal = Some(Modal::Health);
                                     cx.notify();
@@ -1309,7 +1476,7 @@ impl AppView {
                         Button::new("banner-import")
                             .small()
                             .warning()
-                            .label("Review & import")
+                            .text_label("Review & import")
                             .on_click(cx.listener(|this, _, _, cx| this.open_adopt(cx))),
                     )
                     .into_any_element(),
@@ -1324,7 +1491,7 @@ impl AppView {
                     .child(
                         Button::new("banner-adopt")
                             .small()
-                            .label("Import")
+                            .text_label("Import")
                             .on_click(cx.listener(|this, _, _, cx| this.open_adopt(cx))),
                     )
                     .into_any_element(),
@@ -1402,9 +1569,9 @@ impl AppView {
                     let p = op.progress.clone();
                     d.child(
                         Button::new("op-cancel")
-                            .xsmall()
+                            .small()
                             .ghost()
-                            .label("Cancel")
+                            .text_label("Cancel")
                             .on_click(move |_, _, _| p.cancel()),
                     )
                 })
@@ -1429,12 +1596,30 @@ impl AppView {
             .border_t_1()
             .border_color(c(BORDER))
             .child(content)
+            .child({
+                let wait = self
+                    .last_manual_update_check
+                    .map(|t| MANUAL_UPDATE_COOLDOWN.saturating_sub(t.elapsed()))
+                    .filter(|d| !d.is_zero());
+                Button::new("check-updates")
+                    .small()
+                    .ghost()
+                    .icon(gpui_kit::component::IconName::RefreshCw)
+                    .text_label("Check for updates")
+                    .tooltip(match wait {
+                        Some(d) => format!("Just checked. Try again in {}s.", d.as_secs() + 1),
+                        None => "Ask GameBanana for newer files of your installed mods".to_owned(),
+                    })
+                    .loading(self.is_pending("updates"))
+                    .disabled(wait.is_some() || self.is_pending("updates") || self.engine.is_none())
+                    .on_click(cx.listener(|this, _, _, cx| this.manual_update_check(cx)))
+            })
             .child(
                 Button::new("activity")
-                    .xsmall()
+                    .small()
                     .ghost()
                     .icon(crate::icons::Lucide::Clock)
-                    .label(format!("Activity ({})", self.history.len()))
+                    .text_label(format!("Activity ({})", self.history.len()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.modal = Some(Modal::Activity);
                         cx.notify();
@@ -1505,7 +1690,7 @@ impl AppView {
                             .child(
                                 Button::new("browse-game")
                                     .primary()
-                                    .label("Browse for folder…")
+                                    .text_label("Browse for folder…")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.pick_game_folder(cx)
                                     })),

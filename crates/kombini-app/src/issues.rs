@@ -292,7 +292,7 @@ impl AppView {
                                 .small()
                                 .warning()
                                 .icon(Lucide::Wrench)
-                                .label("Fix")
+                                .text_label("Fix")
                                 .tooltip(
                                     "Repair a copy of this mod's files; a snapshot is taken first",
                                 )
@@ -357,7 +357,7 @@ impl AppView {
                     .small()
                     .ghost()
                     .icon(IconName::RefreshCw)
-                    .label("Rescan")
+                    .text_label("Rescan")
                     .loading(scanning)
                     .disabled(scanning || fixing_all)
                     .on_click(cx.listener(|this, _, _, cx| this.scan_issues(cx))),
@@ -367,7 +367,7 @@ impl AppView {
                     .small()
                     .warning()
                     .icon(Lucide::Wrench)
-                    .label(format!("Fix all ({fixable})"))
+                    .text_label(format!("Fix all ({fixable})"))
                     .loading(fixing_all)
                     .disabled(fixable == 0 || scanning || fixing_all || self.launch.phase.busy())
                     .on_click(cx.listener(|this, _, _, cx| this.repair_all(cx))),

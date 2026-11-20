@@ -1,7 +1,99 @@
 //! Small styled building blocks shared by the views.
 
 use crate::theme::*;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+
+/// Height of toolbar controls and text fields (search, filters, buttons).
+pub const BAR_H: f32 = 32.;
+
+/// How far control text is raised. Segoe UI's tall ascent draws glyphs
+/// below the centre of their box (about 0.1em), out of line with icons,
+/// switches and dots next to them.
+pub const TEXT_LIFT: f32 = 1.5;
+
+/// Text inside a control (button, tab, chip), raised to sit centred.
+pub fn ctl_text(text: impl Into<SharedString>) -> Div {
+    div().relative().top(px(-TEXT_LIFT)).child(text.into())
+}
+
+/// Button labels that line up with their icon. Use instead of `.label()`.
+pub trait ButtonText: Sized {
+    fn text_label(self, text: impl Into<SharedString>) -> Self;
+}
+
+impl ButtonText for gpui_kit::component::button::Button {
+    fn text_label(self, text: impl Into<SharedString>) -> Self {
+        use gpui_kit::ParentElement as _;
+        let text = text.into();
+        self.accessibility_label(text.clone()).child(ctl_text(text))
+    }
+}
+
+/// Track of a segmented control (list filters, sort orders).
+pub fn segments() -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(2.))
+        .h(px(BAR_H))
+        .p(px(3.))
+        .rounded(px(RADIUS))
+        .bg(c(PANEL))
+        .border_1()
+        .border_color(c(BORDER))
+}
+
+/// One option of [`segments`]; add `.on_click`.
+pub fn segment(
+    id: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    active: bool,
+) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(id.into()))
+        .h_full()
+        .min_h(px(24.))
+        .flex()
+        .items_center()
+        .px(px(10.))
+        .rounded(px(RADIUS - 2.))
+        .cursor_pointer()
+        .text_xs()
+        .when(active, |d| d.bg(c(HOVER)).text_color(c(TEXT)))
+        .when(!active, |d| d.text_color(c(MUTED)))
+        .hover(|s| s.text_color(c(TEXT)))
+        .child(ctl_text(text))
+}
+
+/// Pill that picks one of many (categories); add `.on_click`.
+pub fn choice_chip(
+    id: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    active: bool,
+) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(id.into()))
+        .flex()
+        .items_center()
+        .h(px(24.))
+        .px(px(10.))
+        .rounded(px(999.))
+        .border_1()
+        .cursor_pointer()
+        .text_xs()
+        .border_color(c(if active { ACCENT } else { BORDER }))
+        .bg(ca(ACCENT, if active { 0.10 } else { 0.0 }))
+        .text_color(c(if active { ACCENT } else { MUTED }))
+        .hover(|s| s.text_color(c(TEXT)))
+        .child(ctl_text(text))
+}
+
+/// Thin vertical line between groups of toolbar controls.
+pub fn vsep() -> Div {
+    div().flex_none().w(px(1.)).h(px(18.)).bg(c(BORDER))
+}
 
 pub fn label(text: impl Into<SharedString>) -> Div {
     div().text_color(c(TEXT)).child(text.into())
@@ -43,7 +135,7 @@ pub fn chip(text: impl Into<SharedString>, color: u32) -> Div {
         .bg(ca(color, 0.16))
         .text_xs()
         .text_color(c(color))
-        .child(text.into())
+        .child(ctl_text(text))
 }
 
 pub fn dot(color: u32) -> Div {

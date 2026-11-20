@@ -4,6 +4,7 @@
 use crate::app::AppView;
 use crate::icons::Lucide;
 use crate::modal::Modal;
+use crate::smooth_scroll::Smooth as _;
 use crate::theme::*;
 use crate::widgets::*;
 use gpui_kit::component::Icon;
@@ -372,7 +373,14 @@ impl AppView {
                     .flex_1()
                     .min_h_0()
                     .child(self.render_mod_list(cx))
-                    .child(self.render_details(cx)),
+                    .child(
+                        div()
+                            .flex_none()
+                            .h_full()
+                            .pr(px(16.))
+                            .pb(px(12.))
+                            .child(self.render_details(cx)),
+                    ),
             )
     }
 
@@ -397,6 +405,14 @@ impl AppView {
             .filter(|m| m.update.available)
             .map(|m| m.id.clone())
             .collect();
+        let tool = |id: &'static str, icon: Lucide, text: String| {
+            Button::new(id)
+                .small()
+                .ghost()
+                .h(px(BAR_H))
+                .icon(icon)
+                .text_label(text)
+        };
         div()
             .flex()
             .flex_none()
@@ -404,42 +420,37 @@ impl AppView {
             .gap(px(8.))
             .px(px(16.))
             .py(px(10.))
-            .child(div().w(px(280.)).child(Input::new(&self.filter_input).small().cleanable(true).prefix(gpui_kit::component::Icon::new(gpui_kit::component::IconName::Search).size(px(14.)).text_color(c(FAINT)))))
             .child(
-                div().flex().gap(px(2.)).p(px(2.)).rounded(px(RADIUS)).bg(c(PANEL)).children(
-                    ListFilter::ALL.into_iter().map(|f| {
-                        let active = self.list_filter == f;
-                        let label = match f {
-                            ListFilter::Updates if self.update_count > 0 => {
-                                format!("Updates ({})", self.update_count)
-                            }
-                            _ => f.label().to_owned(),
-                        };
-                        div()
-                            .id(SharedString::from(format!("filter-{}", f.label())))
-                            .px(px(10.))
-                            .py(px(4.))
-                            .rounded(px(6.))
-                            .cursor_pointer()
-                            .text_xs()
-                            .when(active, |d| d.bg(c(RAISED)).text_color(c(TEXT)))
-                            .when(!active, |d| d.text_color(c(MUTED)))
-                            .hover(|s| s.text_color(c(TEXT)))
-                            .child(label)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.list_filter = f;
-                                this.recompute_rows(cx);
-                                cx.notify();
-                            }))
-                    }),
+                div().w(px(280.)).child(
+                    Input::new(&self.filter_input)
+
+                        .h(px(BAR_H))
+                        .cleanable(true)
+                        .prefix(
+                            gpui_kit::component::Icon::new(gpui_kit::component::IconName::Search)
+                                .size(px(14.))
+                                .text_color(c(FAINT)),
+                        ),
                 ),
             )
+            .child(segments().children(ListFilter::ALL.into_iter().map(|f| {
+                let label = match f {
+                    ListFilter::Updates if self.update_count > 0 => {
+                        format!("Updates ({})", self.update_count)
+                    }
+                    _ => f.label().to_owned(),
+                };
+                segment(format!("filter-{}", f.label()), label, self.list_filter == f).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.list_filter = f;
+                        this.recompute_rows(cx);
+                        cx.notify();
+                    }),
+                )
+            })))
             .child(div().flex_1())
             .child(
-                Button::new("enable-shown")
-                    .small()
-                    .ghost()
-                    .icon(Lucide::Power).label("Enable shown")
+                tool("enable-shown", Lucide::Power, "Enable shown".into())
                     .loading(bulk)
                     .disabled(bulk || enabled_visible.is_empty())
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -447,23 +458,22 @@ impl AppView {
                     })),
             )
             .child(
-                Button::new("disable-shown")
-                    .small()
-                    .ghost()
-                    .label("Disable shown")
+                tool("disable-shown", Lucide::PowerOff, "Disable shown".into())
                     .disabled(bulk || disabled_visible.is_empty())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.set_enabled(disabled_visible.clone(), false, cx)
                     })),
             )
+            .child(vsep())
             .when(!updatable.is_empty(), |d| {
                 let n = updatable.len();
                 d.child(
                     Button::new("update-all")
                         .small()
                         .success()
+                        .h(px(BAR_H))
                         .icon(Lucide::Download)
-                        .label(format!("Update all ({n})"))
+                        .text_label(format!("Update all ({n})"))
                         .tooltip("Queue every available update in Downloads")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.update_all(updatable.clone(), cx)
@@ -472,48 +482,42 @@ impl AppView {
             })
             .child({
                 let fixable = self.issues.repairable_mods().len();
-                Button::new("mod-issues")
-                    .small()
-                    .ghost()
-                    .icon(Lucide::Wrench)
-                    .label(if fixable > 0 {
+                tool(
+                    "mod-issues",
+                    Lucide::Wrench,
+                    if fixable > 0 {
                         format!("Mod issues ({fixable})")
                     } else {
                         "Mod issues".to_owned()
-                    })
-                    .tooltip("Check mods against the installed game and fix what a game update broke")
-                    .on_click(cx.listener(|this, _, _, cx| this.open_issues(cx)))
+                    },
+                )
+                .tooltip("Check mods against the installed game and fix what a game update broke")
+                .on_click(cx.listener(|this, _, _, cx| this.open_issues(cx)))
             })
             .child(
-                Button::new("groups")
-                    .small()
-                    .ghost()
-                    .icon(Lucide::Boxes)
-                    .label("Groups")
-                    .on_click(cx.listener(|this, _, _, cx| {
+                tool("groups", Lucide::Boxes, "Groups".into()).on_click(cx.listener(
+                    |this, _, _, cx| {
                         this.modal = Some(Modal::Groups);
                         cx.notify();
-                    })),
+                    },
+                )),
             )
             .child(
-                Button::new("conflicts")
-                    .small()
-                    .ghost()
-                    .icon(Lucide::Swords).label("Conflicts")
+                tool("conflicts", Lucide::Swords, "Conflicts".into())
                     .on_click(cx.listener(|this, _, _, cx| this.open_conflicts(cx))),
             )
             .child(
-                Button::new("snapshots")
-                    .small()
-                    .ghost()
-                    .icon(Lucide::Camera).label("Snapshots")
+                tool("snapshots", Lucide::Camera, "Snapshots".into())
                     .on_click(cx.listener(|this, _, _, cx| this.open_snapshots(cx))),
             )
+            .child(vsep())
             .child(
                 Button::new("install-file")
                     .small()
                     .primary()
-                    .icon(Lucide::FolderInput).label("Install from file…")
+                    .h(px(BAR_H))
+                    .icon(Lucide::FolderInput)
+                    .text_label("Install from file…")
                     .tooltip("Archives (.zip .7z .rar), .vpk files or folders. You can also drop files anywhere.")
                     .on_click(cx.listener(|this, _, _, cx| this.install_files_dialog(cx))),
             )
@@ -539,14 +543,14 @@ impl AppView {
                         .child(
                             Button::new("empty-discover")
                                 .primary()
-                                .label("Browse Discover")
+                                .text_label("Browse Discover")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.set_tab(crate::app::Tab::Discover, cx)
                                 })),
                         )
                         .child(
                             Button::new("empty-import")
-                                .label("Import existing")
+                                .text_label("Import existing")
                                 .on_click(cx.listener(|this, _, _, cx| this.open_adopt(cx))),
                         ),
                 )
@@ -593,6 +597,13 @@ impl AppView {
                                 }),
                             )
                             .track_scroll(&self.list_scroll)
+                            .on_scroll({
+                                let base = self.list_scroll.0.borrow().base_handle.clone();
+                                let wheel = self.smooth.for_handle("mod-list", &base);
+                                cx.listener(move |_, ev: &ScrollEvent, window, cx| {
+                                    wheel.wheel(ev, window, cx)
+                                })
+                            })
                             .size_full(),
                         ),
                     ),
@@ -631,6 +642,15 @@ impl AppView {
         let update = m.update.available;
         let size = format_bytes(m.total_size());
         let variants = m.roots().count();
+        let page_file = m
+            .remote_id
+            .filter(|r| {
+                self.lib
+                    .mods
+                    .values()
+                    .any(|o| o.remote_id == Some(*r) && o.id != m.id)
+            })
+            .map(|_| crate::page_files::file_label(m));
         let thumb = m.thumbnail_url.clone().and_then(|u| self.thumb(&u, cx));
         let dragging = self.dragging.as_ref() == Some(&id);
         let drag = DraggedMod {
@@ -809,7 +829,17 @@ impl AppView {
                                         .gap(px(6.))
                                         .text_xs()
                                         .text_color(c(FAINT))
-                                        .child(size)
+                                        .overflow_hidden()
+                                        .child(div().flex_none().child(size))
+                                        .when_some(page_file, |d, l| {
+                                            d.child(
+                                                div()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_color(c(MUTED))
+                                                    .child(format!("· {l}")),
+                                            )
+                                        })
                                         .when(variants > 1, |d| {
                                             d.child(format!("· {variants} variants"))
                                         })
@@ -855,8 +885,11 @@ impl AppView {
             .w(px(380.))
             .flex_none()
             .h_full()
-            .border_l_1()
+            // A card like the mod list beside it.
+            .rounded(px(RADIUS))
+            .border_1()
             .border_color(c(BORDER))
+            .overflow_hidden()
             .bg(c(PANEL));
         let Some(m) = self
             .selected
@@ -899,6 +932,7 @@ impl AppView {
             .id("details")
             .size_full()
             .overflow_y_scroll()
+            .smooth(&self.smooth.get("details"), cx)
             .p(px(16.))
             .flex()
             .flex_col()
@@ -1002,7 +1036,7 @@ impl AppView {
                         let pending = self.is_pending(&format!("toggle:{id}"));
                         let b = Button::new("d-toggle")
                             .small()
-                            .label(if on { "Disable" } else { "Enable" })
+                            .text_label(if on { "Disable" } else { "Enable" })
                             .loading(pending)
                             .disabled(pending)
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -1016,7 +1050,7 @@ impl AppView {
                             Button::new("d-update")
                                 .small()
                                 .success()
-                                .label(match &m.update.latest_version {
+                                .text_label(match &m.update.latest_version {
                                     Some(v) => format!("Update to {v}"),
                                     None => "Update".to_owned(),
                                 })
@@ -1032,7 +1066,7 @@ impl AppView {
                                 .small()
                                 .ghost()
                                 .icon(Lucide::SkipForward)
-                                .label("Skip this version")
+                                .text_label("Skip this version")
                                 .tooltip("Hide this update; newer versions will still show")
                                 .loading(self.is_pending(&format!("skip:{id}")))
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1051,7 +1085,7 @@ impl AppView {
                             } else {
                                 gpui_kit::component::IconName::Star
                             })
-                            .label(if fav { "Favorited" } else { "Favorite" })
+                            .text_label(if fav { "Favorited" } else { "Favorite" })
                             .loading(self.is_pending("favorite"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.set_favorite(vec![f_id.clone()], !fav, cx)
@@ -1063,7 +1097,7 @@ impl AppView {
                             .small()
                             .ghost()
                             .icon(if pinned { Lucide::PinOff } else { Lucide::Pin })
-                            .label(if pinned { "Unpin" } else { "Pin to top" })
+                            .text_label(if pinned { "Unpin" } else { "Pin to top" })
                             .tooltip("Pinned mods always load first and win conflicts")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let id = p_id.clone();
@@ -1082,7 +1116,7 @@ impl AppView {
                             .small()
                             .ghost()
                             .icon(gpui_kit::component::IconName::Search)
-                            .label("Inspect files")
+                            .text_label("Inspect files")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.open_inspector(i_id.clone(), cx)
                             }))
@@ -1093,7 +1127,7 @@ impl AppView {
                                 .small()
                                 .ghost()
                                 .icon(gpui_kit::component::IconName::ExternalLink)
-                                .label("Open page")
+                                .text_label("Open page")
                                 .on_click(move |_, _, cx| cx.open_url(&url)),
                         )
                     })
@@ -1104,7 +1138,7 @@ impl AppView {
                             .ghost()
                             .danger()
                             .icon(Lucide::Trash)
-                            .label("Uninstall")
+                            .text_label("Uninstall")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.confirm_uninstall(vec![u_id.clone()], cx)
                             }))
@@ -1115,6 +1149,9 @@ impl AppView {
             body = body.child(section);
         }
         if let Some(section) = self.render_sounds_section(&id, cx) {
+            body = body.child(section);
+        }
+        if let Some(section) = self.render_page_files_section(&id, cx) {
             body = body.child(section);
         }
         if let Some(section) = self.render_versions_section(&id, cx) {
@@ -1142,9 +1179,9 @@ impl AppView {
                             .gap(px(6.))
                             .child(
                                 Button::new("mv-top")
-                                    .xsmall()
+                                    .small()
                                     .icon(Lucide::ArrowUpToLine)
-                                    .label("Top")
+                                    .text_label("Top")
                                     .disabled(pos == 0 || reordering)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.move_enabled(a.clone(), 0, cx)
@@ -1152,8 +1189,8 @@ impl AppView {
                             )
                             .child(
                                 Button::new("mv-up")
-                                    .xsmall()
-                                    .label("Up")
+                                    .small()
+                                    .text_label("Up")
                                     .disabled(pos == 0 || reordering)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.move_enabled(b.clone(), pos.saturating_sub(1), cx)
@@ -1161,8 +1198,8 @@ impl AppView {
                             )
                             .child(
                                 Button::new("mv-down")
-                                    .xsmall()
-                                    .label("Down")
+                                    .small()
+                                    .text_label("Down")
                                     .disabled(pos >= last || reordering)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.move_enabled(c2.clone(), pos + 1, cx)
@@ -1170,9 +1207,9 @@ impl AppView {
                             )
                             .child(
                                 Button::new("mv-bottom")
-                                    .xsmall()
+                                    .small()
                                     .icon(Lucide::ArrowDownToLine)
-                                    .label("Bottom")
+                                    .text_label("Bottom")
                                     .disabled(pos >= last || reordering)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.move_enabled(d2.clone(), usize::MAX, cx)
@@ -1251,9 +1288,9 @@ impl AppView {
                     .child({
                         let s_id = id.clone();
                         Button::new("variants-all")
-                            .xsmall()
+                            .small()
                             .ghost()
-                            .label("Select all")
+                            .text_label("Select all")
                             .disabled(selecting)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let id = s_id.clone();
@@ -1408,7 +1445,7 @@ impl AppView {
             cx.notify();
             return;
         };
-        self.queue_gamebanana_install(remote, Some(file_id), true, cx);
+        self.queue_gamebanana_update(id, remote, file_id, cx);
     }
 }
 

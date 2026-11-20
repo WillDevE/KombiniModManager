@@ -252,10 +252,10 @@ impl AppView {
                     )
                     .child(
                         Button::new(("keep-version", i))
-                            .xsmall()
+                            .small()
                             .ghost()
                             .icon(IconName::Plus)
-                            .label("Keep as mod")
+                            .text_label("Keep as mod")
                             .tooltip("Add it as a separate mod instead of swapping")
                             .disabled(busy)
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -264,9 +264,9 @@ impl AppView {
                     )
                     .child(
                         Button::new(("restore-version", i))
-                            .xsmall()
+                            .small()
                             .icon(IconName::Undo2)
-                            .label("Restore")
+                            .text_label("Restore")
                             .disabled(busy)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.confirm_restore_version(restore_id.clone(), i, cx)
@@ -322,10 +322,10 @@ impl AppView {
                                     .when_some(page, |d, url| {
                                         d.child(
                                             Button::new("changelog-open")
-                                                .xsmall()
+                                                .small()
                                                 .ghost()
                                                 .icon(IconName::ExternalLink)
-                                                .label("All updates")
+                                                .text_label("All updates")
                                                 .on_click(move |_, _, cx| {
                                                     cx.open_url(
                                                         &kombini_gamebanana::links::updates_page_url(&url),

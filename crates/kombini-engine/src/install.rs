@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 /// Metadata supplied by the caller (GameBanana, import, or the file picker).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallMeta {
-    /// Explicit id (imports, merges). Otherwise `gb<remote_id>` or `local_<hash>`.
+    /// Explicit id (imports, merges, updates). Otherwise see
+    /// [`resolve_install_id`].
     pub id: Option<ModId>,
     pub title: Option<String>,
     pub source: Option<ModSource>,
@@ -41,6 +42,15 @@ pub struct InstallMeta {
     pub enable: Option<bool>,
     /// rel_paths of roots to select; None = previous selection or default.
     pub selection: Option<Vec<String>>,
+    /// With `enable: Some(true)`: turn off the other files of the same
+    /// GameBanana page (switching variants instead of stacking them).
+    #[serde(default)]
+    pub disable_siblings: bool,
+    /// File ids of one batch install from a page, highest load priority
+    /// first, so files that finish downloading in any order still end up in
+    /// this order. Empty: a new file goes above the page's other files.
+    #[serde(default)]
+    pub order_hint: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,6 +64,8 @@ pub struct InstallReport {
     pub heroes: Vec<String>,
     pub safety: Vec<SafetyFinding>,
     pub warnings: Vec<String>,
+    /// Titles of the page's other files that were turned off.
+    pub disabled_siblings: Vec<String>,
     pub change: ChangeReport,
 }
 
@@ -345,18 +357,15 @@ impl Engine {
             });
         }
 
-        let id = match (&meta.id, meta.remote_id) {
-            (Some(id), _) => id.clone(),
-            (None, Some(remote)) => ModId::gamebanana(remote),
-            (None, None) => {
-                let first_root = files
-                    .iter()
-                    .find(|f| !f.is_chunk)
-                    .map(|f| f.blob.as_str().to_owned())
-                    .unwrap_or_default();
-                ModId::new(format!("local_{}", &first_root[..first_root.len().min(12)]))
-            }
-        };
+        let first_root = files
+            .iter()
+            .find(|f| !f.is_chunk)
+            .map(|f| f.blob.as_str().to_owned())
+            .unwrap_or_default();
+        let local_id = ModId::new(format!("local_{}", &first_root[..first_root.len().min(12)]));
+        // Resolved inside the transaction so two files of one page finishing
+        // together cannot claim the same id.
+        let mut id = local_id.clone();
 
         let heroes = HeroTable::builtin().detect(staged.entry_paths.iter().map(String::as_str));
         let safety =
@@ -369,13 +378,15 @@ impl Engine {
             .collect();
         let defaults = default_root_selection(roots.iter().map(|(r, n)| (r.as_str(), n.as_str())));
         let bytes: u64 = files.iter().map(|f| f.size).sum();
-        let title_fallback = meta.title.clone().unwrap_or_else(|| id.to_string());
         let warnings = staged.warnings;
+        let mut disabled_siblings = Vec::new();
 
         let mut replaced = false;
         let mut final_title = String::new();
         let mut installed_roots = 0;
         let change = self.mutate("install", progress, |state| {
+            id = resolve_install_id(&state.mods, &meta, &local_id);
+            let title_fallback = meta.title.clone().unwrap_or_else(|| id.to_string());
             let previous = state.mods.get(&id).cloned();
             replaced = previous.is_some();
             let mut m = previous.clone().unwrap_or_else(|| {
@@ -454,13 +465,32 @@ impl Engine {
             }
             final_title = m.title.clone();
             state.mods.insert(id.clone(), m);
+            let siblings = siblings_of(&state.mods, &id);
             for profile in &mut state.profiles {
-                profile.ensure_ordered(&id);
+                if replaced || siblings.is_empty() {
+                    profile.ensure_ordered(&id);
+                } else {
+                    place_with_siblings(profile, &id, &siblings, &state.mods, &meta.order_hint);
+                }
             }
             if let Some(enable) = meta.enable {
+                // Files installed in the same batch stay on together.
+                let titles: Vec<(ModId, String)> = siblings
+                    .iter()
+                    .filter_map(|s| state.mods.get(s))
+                    .filter(|m| !m.file_id.is_some_and(|f| meta.order_hint.contains(&f)))
+                    .map(|m| (m.id.clone(), m.title.clone()))
+                    .collect();
                 let profile = state.profile_mut();
                 if enable {
                     profile.enabled.insert(id.clone());
+                    if meta.disable_siblings {
+                        for (s, title) in titles {
+                            if profile.enabled.remove(&s) {
+                                disabled_siblings.push(title);
+                            }
+                        }
+                    }
                 } else {
                     profile.enabled.remove(&id);
                 }
@@ -482,7 +512,106 @@ impl Engine {
             heroes,
             safety,
             warnings,
+            disabled_siblings,
             change,
         })
     }
+}
+
+/// Which mod an install goes to when the caller gave no id:
+/// - GameBanana: the mod already holding this file (a reinstall), else
+///   `gb<page>` for the page's first file, else a new sibling
+///   `gb<page>_<file>`, so other files of a page never replace each other.
+///   Without a file id (old metadata) the page's mod is replaced as before.
+/// - Local: `local_<hash>` of the first root.
+pub fn resolve_install_id(
+    mods: &std::collections::BTreeMap<ModId, Mod>,
+    meta: &InstallMeta,
+    local_id: &ModId,
+) -> ModId {
+    if let Some(id) = &meta.id {
+        return id.clone();
+    }
+    let Some(remote) = meta.remote_id else {
+        return local_id.clone();
+    };
+    let base = ModId::gamebanana(remote);
+    let mut same_page = mods.values().filter(|m| m.remote_id == Some(remote));
+    let Some(file_id) = meta.file_id else {
+        return if mods.contains_key(&base) {
+            base
+        } else {
+            same_page.next().map_or(base, |m| m.id.clone())
+        };
+    };
+    if let Some(m) = mods
+        .values()
+        .find(|m| m.remote_id == Some(remote) && m.file_id == Some(file_id))
+    {
+        return m.id.clone();
+    }
+    if same_page.next().is_none() && !mods.contains_key(&base) {
+        return base;
+    }
+    ModId::gamebanana_sibling(remote, &file_id.to_string(), |c| mods.contains_key(c))
+}
+
+/// Other installed files of the same GameBanana page as `id`.
+pub fn siblings_of(mods: &std::collections::BTreeMap<ModId, Mod>, id: &ModId) -> Vec<ModId> {
+    let Some(remote) = mods.get(id).and_then(|m| m.remote_id) else {
+        return Vec::new();
+    };
+    mods.values()
+        .filter(|m| m.remote_id == Some(remote) && &m.id != id)
+        .map(|m| m.id.clone())
+        .collect()
+}
+
+/// Puts a newly installed page file next to its siblings in the load order
+/// (index 0 wins). Siblings named in `hint` keep the hint's order; otherwise
+/// the new file goes directly above the page's other files.
+pub fn place_with_siblings(
+    profile: &mut kombini_core::Profile,
+    id: &ModId,
+    siblings: &[ModId],
+    mods: &std::collections::BTreeMap<ModId, Mod>,
+    hint: &[u64],
+) {
+    profile.order.retain(|o| o != id);
+    let rank = |m: &ModId| {
+        mods.get(m)
+            .and_then(|m| m.file_id)
+            .and_then(|f| hint.iter().position(|h| *h == f))
+    };
+    let mine = rank(id);
+    let positions: Vec<(usize, Option<usize>)> = profile
+        .order
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| siblings.contains(o))
+        .map(|(i, o)| (i, rank(o)))
+        .collect();
+    let Some(&(first, _)) = positions.first() else {
+        profile.order.push(id.clone());
+        return;
+    };
+    let at = match mine {
+        Some(me) => {
+            // Above the first hinted sibling that ranks lower than this one,
+            // else below the last one that ranks higher.
+            if let Some(&(i, _)) = positions.iter().find(|(_, r)| r.is_some_and(|r| r > me)) {
+                i
+            } else if let Some(&(i, _)) = positions
+                .iter()
+                .rev()
+                .find(|(_, r)| r.is_some_and(|r| r < me))
+            {
+                i + 1
+            } else {
+                first
+            }
+        }
+        None => first,
+    };
+    profile.order.insert(at, id.clone());
 }

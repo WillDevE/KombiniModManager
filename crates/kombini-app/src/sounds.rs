@@ -126,14 +126,14 @@ impl AppView {
     ) -> Button {
         let playing = self.is_playing(&key);
         Button::new(id)
-            .xsmall()
+            .small()
             .ghost()
             .icon(if playing {
                 IconName::Square
             } else {
                 IconName::Play
             })
-            .when_some(label, |b, l| b.label(l))
+            .when_some(label, |b, l| b.text_label(l))
             .tooltip(if playing { "Stop" } else { "Play" })
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.play_sound(key.clone(), origin.clone(), path.clone(), cx)
@@ -306,9 +306,9 @@ impl AppView {
                                     ))))
                                     .child(
                                         Button::new("snd-all")
-                                            .xsmall()
+                                            .small()
                                             .ghost()
-                                            .label("All files")
+                                            .text_label("All files")
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.open_inspector(inspect_id.clone(), cx)
                                             })),
